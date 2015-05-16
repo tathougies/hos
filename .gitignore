@@ -1,0 +1,10 @@
+*~
+kernel.bin
+kernel.elf
+hos.iso
+build/
+vendor/
+cd/
+.#*
+#*
+prefix/
