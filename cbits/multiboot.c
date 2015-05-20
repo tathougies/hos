@@ -15,8 +15,22 @@
 #define KERNEL_SIZE 0x0badbeef
 #endif
 
+#define MAX_MODULE_COUNT 32
+
+typedef struct {
+  uintptr_t cur_base;
+  struct multiboot_memory_map *mmap;
+  size_t mmap_length;
+} bootstrap_allocator_user_info_t;
+
+typedef struct {
+  uint32_t mod_phys_start, mod_phys_end;
+  char mod_cmdline[120];
+} __attribute__((aligned)) mboot_module_info_t;
+
 struct multiboot_info *g_mboot_hdr_ptr;
 extern int kernel_size;
+extern mem_allocator_t buddy_page_allocator;
 regions_t g_buddy_regions;
 
 hp_t phys_memory_management_heap = HEAP_INITIALIZER(ARCH_PHYS_MEMORY_MANAGEMENT_HEAP_BASE);
@@ -24,11 +38,8 @@ hp_t phys_memory_management_heap = HEAP_INITIALIZER(ARCH_PHYS_MEMORY_MANAGEMENT_
 uintptr_t g_pages_allocated[BS_PAGE_LIST_SIZE];
 uint32_t g_pages_allocated_count = 0;
 
-typedef struct {
-  uintptr_t cur_base;
-  struct multiboot_memory_map *mmap;
-  size_t mmap_length;
-} bootstrap_allocator_user_info_t;
+mboot_module_info_t g_mboot_modules[MAX_MODULE_COUNT];
+int g_module_count;
 
 DECL_MEMPOOL_TYPE(buddy_region_t);
 DECL_RB_TREE(buddy_region_t, uintptr_t);
@@ -51,7 +62,7 @@ void klog(const char *c)
 #ifdef KERNEL
   static char *vBuf = (char *) REAL_MODE_ADDR(0xb8000UL);
   for (;*c != 0; ++c, vBuf += 2) {
-    vBuf[1] = '\x0f';
+    vBuf[1] = '\x04';
     vBuf[0] = *c;
   }
 #else
@@ -124,6 +135,13 @@ void *bootstrap_alloc(mem_allocator_t *alloc)
     bs_alloc_info->cur_base = (KERNEL_SIZE + 0x100000 + ARCH_PAGE_SIZE - 1) & 0xfffffffffffff000;
     return bootstrap_alloc(alloc);
   } else {
+    uint32_t i;
+    for ( i = 0; i < g_module_count; ++i ) {
+      if ( bs_alloc_info->cur_base >= g_mboot_modules[i].mod_phys_start && bs_alloc_info->cur_base < g_mboot_modules[i].mod_phys_end ) {
+	bs_alloc_info->cur_base = PAGE_ADDR(((uintptr_t) (g_mboot_modules[i].mod_phys_end + ARCH_PAGE_SIZE - 1)));
+	return bootstrap_alloc(alloc);
+      }
+    }
     /* Now add bs_alloc_info->cur_base to our allocated page list */
     g_pages_allocated[g_pages_allocated_count++] = bs_alloc_info->cur_base;
     bs_alloc_info->cur_base += ARCH_PAGE_SIZE;
@@ -183,27 +201,35 @@ int initialize_regions(struct multiboot_info *mboot, regions_t *regions)
 
   while ( mmap_parsed_length < mboot->mmap_length ) {
     if ( mmap->type == MULTIBOOT_MEMORY_MAP_TYPE_FREE ) {
-      if ( mmap->base_addr <= 0x100000 && (mmap->base_addr + mmap->length) > 0x100000 ) {
-	if ( (0x100000 - mmap->base_addr) > 0 ) {
-	  add_free_region(&bootstrap_buddy_allocator, regions, 0x100000, 0x100000 - mmap->base_addr);
-	}
-      }
-      if ( mmap->base_addr <= (0x100000 + KERNEL_SIZE) && (mmap->base_addr + mmap->length) > (0x100000 + KERNEL_SIZE) ) {
-	if ( ((0x100000 + KERNEL_SIZE) - (mmap->base_addr + mmap->length)) > 0 ) {
-	  add_free_region(&bootstrap_buddy_allocator, regions, 0x100000 + KERNEL_SIZE, (mmap->base_addr + mmap->length) - (0x100000 + KERNEL_SIZE));
-	}
-      }
-      if ( (mmap->base_addr < 0x100000 && (mmap->base_addr + mmap->length) <= 0x100000) ||
-	   mmap->base_addr >= (0x100000 + KERNEL_SIZE) ) {
+      /* if ( mmap->base_addr <= 0x100000 && (mmap->base_addr + mmap->length) > 0x100000 ) { */
+      /* 	if ( (0x100000 - mmap->base_addr) > 0 ) { */
+      /* 	  add_free_region(&bootstrap_buddy_allocator, regions, 0x100000, 0x100000 - mmap->base_addr); */
+      /* 	} */
+      /* } */
+      /* if ( mmap->base_addr <= (0x100000 + KERNEL_SIZE) && (mmap->base_addr + mmap->length) > (0x100000 + KERNEL_SIZE) ) { */
+      /* 	if ( ((0x100000 + KERNEL_SIZE) - (mmap->base_addr + mmap->length)) > 0 ) { */
+      /* 	  add_free_region(&bootstrap_buddy_allocator, regions, 0x100000 + KERNEL_SIZE, (mmap->base_addr + mmap->length) - (0x100000 + KERNEL_SIZE)); */
+      /* 	} */
+      /* } */
+      /* if ( (mmap->base_addr < 0x100000 && (mmap->base_addr + mmap->length) <= 0x100000) || */
+      /* 	   mmap->base_addr >= (0x100000 + KERNEL_SIZE) ) { */
 	add_free_region(&bootstrap_buddy_allocator, regions, mmap->base_addr, mmap->length);
-      }
+	/* } */
     }
     mmap_parsed_length += mmap->size + 4;
     mmap = (struct multiboot_memory_map *) (((uintptr_t) mmap) + mmap->size + 4);
   }
 
-  /* Now, go through all the bootstrap allocated pages and mark them as used */
+  /* Now, go through all the bootstrap allocated pages and mark them as used. Also, we should mark used all the kernel and module pages */
   klog("Fixing up mmap after bootstrap... ");
+
+  /* First the kernel */
+  add_used_region(&bootstrap_buddy_allocator, regions, 0x100000, PAGE_ADDR((KERNEL_SIZE + ARCH_PAGE_SIZE - 1)));
+
+  /* Then the modules */
+  for ( i = 0; i < g_module_count; ++i )
+    add_used_region(&bootstrap_buddy_allocator, regions, g_mboot_modules[i].mod_phys_start, PAGE_ADDR(((uintptr_t) (g_mboot_modules[i].mod_phys_end - g_mboot_modules[i].mod_phys_start + ARCH_PAGE_SIZE - 1))));
+
   for ( i = 0; i < g_pages_allocated_count; ++i ) {
     add_used_region(&bootstrap_buddy_allocator, regions, g_pages_allocated[i], ARCH_PAGE_SIZE);
   }
@@ -212,10 +238,45 @@ int initialize_regions(struct multiboot_info *mboot, regions_t *regions)
   return 0;
 }
 
+void copy_modules(struct multiboot_info *mboot, mboot_module_info_t *module_info, int *module_count)
+{
+  uint32_t i = 0;
+  struct multiboot_module *mods = (struct multiboot_module *) REAL_MODE_ADDR(((uintptr_t) mboot->mods_addr));
+  if ( mboot->flags & MBI_FLAG_MODS == 0 )
+    return; /* No modules */
+  for ( ; i < mboot->mods_count && i < MAX_MODULE_COUNT; ++i) {
+    char *mod_cmdline = REAL_MODE_ADDR(((uintptr_t) mods[i].string));
+    module_info[i].mod_phys_start = mods[i].mod_start;
+    module_info[i].mod_phys_end = mods[i].mod_end;
+
+    strncpy(module_info[i].mod_cmdline, mod_cmdline, sizeof(module_info[i].mod_cmdline) - 1);
+    (*module_count)++;
+  }
+}
+
 void bootstrap_kernel()
 {
   g_mboot_hdr_ptr = REAL_MODE_ADDR(g_mboot_hdr_ptr);
+  g_module_count = 0;
+  copy_modules(g_mboot_hdr_ptr, g_mboot_modules, &g_module_count);
+  klog("Have ");
+  klog_hex(g_module_count);
+  klog(" modules");
   initialize_regions(g_mboot_hdr_ptr, &g_buddy_regions);
+
+  /* We're also going to go ahead and map the first multiboot module completely into memory starting at 0x400000 */
+
+  if ( g_module_count >= 1) {
+    uint64_t cur_phys_addr = g_mboot_modules[0].mod_phys_start;
+    uint64_t cur_virt_addr = 0x400000;
+
+    while ( cur_phys_addr < g_mboot_modules[0].mod_phys_end ) {
+      arch_map_page(&buddy_page_allocator, cur_virt_addr, cur_phys_addr);
+      arch_mark_user(cur_virt_addr);
+      cur_virt_addr += ARCH_PAGE_SIZE;
+      cur_phys_addr += ARCH_PAGE_SIZE;
+    }
+  }
 }
 
 #define ALIGN(addr, size) (addr & ~(size - 1))

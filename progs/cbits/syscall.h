@@ -1,0 +1,1 @@
+void syscall(int i);

@@ -1,0 +1,12 @@
+name: hos-containers
+version: 0.1.0.0
+exposed-modules:
+   - Data.Set
+   - Data.PQueue.Min
+hidden-modules:
+   - Data.Utils.StrictFold
+   - Data.Utils.StrictPair
+   - Data.PQueue.Internals
+   - Data.PQueue.Prio.Internals
+build-depends:
+   - applicative

@@ -1,6 +1,6 @@
 include ../build.opts
 CBITS_C_SOURCES=memory.c multiboot.c rts_integration.c arch.c
-CBITS_AS_SOURCES=boot.S
+CBITS_AS_SOURCES=boot.S context.S
 TEST_PROGRAMS=multiboot pool rbtree
 
 CBITS_OBJECTS=$(addprefix ../build/cbits/, $(CBITS_C_SOURCES:.c=.o) $(CBITS_AS_SOURCES:.S=.o))
@@ -29,6 +29,9 @@ include $(addprefix ../build/depends/cbits/, $(CBITS_C_SOURCES:.c=.P))
 ../build/cbits/boot.o: boot.S
 	mkdir -p ../build/cbits
 	$(CROSSCOMPILE_AS) -c boot.S -o ../build/cbits/boot.o
+../build/cbits/context.o: context.S
+	mkdir -p ../build/cbits
+	$(CROSSCOMPILE_AS) -c context.S -o ../build/cbits/context.o
 
 test: $(addsuffix .passed, $(addprefix ../build/test/, $(TEST_PROGRAMS)))
 

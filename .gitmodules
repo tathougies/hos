@@ -1,0 +1,3 @@
+[submodule "libhs/containers"]
+	path = libhs/containers
+	url = https://github.com/haskell/containers

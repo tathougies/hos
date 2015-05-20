@@ -68,6 +68,12 @@ void *ext_page_aligned_alloc(size_t sz)
   }
 
   aligned_sz = (1UL << ARCH_LOWEST_SET_BIT(phys_page));
+  if ( aligned_sz < sz ) {
+    klog("Error: got ");
+    klog_hex(phys_page);
+    klog(" in response to ");
+    klog_hex(sz);
+  }
   assert(aligned_sz >= sz);
 
   for (mapped_size = 0; mapped_size < aligned_sz; mapped_size += ARCH_PAGE_SIZE) {
@@ -107,3 +113,52 @@ struct s_cache *ext_alloc_cache()
   return (struct s_cache *) MEM_ALLOC(&s_cache_allocator);
 }
 
+void jhc_error(char *s)
+{
+  klog("haskell panic: ");
+  klog(s);
+  assert(0);
+}
+
+void jhc_case_fell_off(int line)
+{
+  klog("jhc_case_fell_off at line ");
+  klog_hex(line);
+  assert(0);
+}
+
+void arch_invalidate_page(uint64_t ptr)
+{
+  ARCH_INVALIDATE_PAGE(ptr);
+}
+
+int fprintf(void *f, const char *fmt, ...)
+{
+  return 0;
+}
+
+int printf(const char *fmt, ...)
+{
+  return 0;
+}
+
+void puts(char *s)
+{
+  return;
+}
+
+char *strncpy(char *dest, const char *src, size_t n)
+{
+    char *ret = dest;
+    do {
+        if (!n--)
+            return ret;
+    } while (*dest++ = *src++);
+    while (n--)
+        *dest++ = 0;
+    return ret;
+}
+
+void jhc_exit() { for (;;); }
+
+/* Some floating point stuff */

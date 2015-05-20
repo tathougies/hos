@@ -51,6 +51,15 @@ page_tables_base:
 .set PAGE_TABLE_SZ, . - page_tables_base
 end_page_tables:
 
+.set TSS_OFFS, . - page_tables_base
+.global tssArea
+tssArea: .skip 0x68
+.set IOPB, . - tssArea
+.set IOPB_OFFS, . - page_tables_base
+iopb:
+	 .skip 8193 # We need one extra byte at the end of the iopb
+.set TSS_SIZE, . - tssArea
+
 gdt64:
 .set GDT_OFFS, . - page_tables_base
 .set nullS, . - gdt64
@@ -59,6 +68,12 @@ gdt64:
 	.skip 8
 .set dataS, . - gdt64
 	.skip 8
+.set userDataS, . - gdt64
+	.skip 8
+.set userCodeS, . - gdt64
+	.skip 8
+.set tssS, . - gdt64
+	.skip 16
 .set GDT_SIZE, . - gdt64 - 1
 gdt_pointer:
 .set GDT_POINTER_OFFS, . - page_tables_base
@@ -76,7 +91,7 @@ gdt_pointer:
 .type _start, @function
 _start:
 	.code32
-	movl $0x11c000, %esp
+	movl $bootstrap_stack_mb, %esp
 	cli
 	# Now, we're going to set up long mode paging, identity mapping the whole kernel to 0xffffffff00000000
 	# We're also going to identity map all the first 2 GB to 0xffffffff80000000
@@ -145,17 +160,18 @@ _longModeStart:
 	orq $0x2, %rax
 	movq %rax, %cr0
 
+	# Now, we can load the task register with our one and only TSS segment
+	movw $tssS, %ax
+	ltr %ax
+
 	# Now we're going to call the initialize_regions function with the multiboot header
 	call bootstrap_kernel
 	# At this point we have all the structures we need to initialize the jhc garbage collector.
 	# The garbage collector is initialized by calling jhc_alloc_init in gc_jgc.c
-	call jhc_init_msg
 	call jhc_alloc_init
 	# We're now ready to initialize the jhc haskell runtime. jhc creates a function for us called jhc_hs_init, which initializes its garbage collection structures. We should call that now.
 
-	call jhc_hs_init_msg
 	call jhc_hs_init
-	call amain_msg
 	call _amain
 
 	# In case the function returns, we'll want to put the computer into an
@@ -175,7 +191,7 @@ _longModeStart:
 .code32
 .global _zeroPageTables
 _zeroPageTables:
-	movl $(page_tables_base_mb + PML4), %edi
+	movl $(page_tables_base_mb), %edi
 	movl $(PAGE_TABLE_SZ >> 2), %ecx
 	xor %eax, %eax
 	rep stosl
@@ -244,10 +260,55 @@ _setupGdt:
 	movl $0, 4(%ecx)
 
 	# Code segment
-	movl $0, 8(%ecx)
-	movl $0x00209800, 12(%ecx)
+	movl $0, 0x8(%ecx)
+	movl $0x00209800, 0xC(%ecx)
 
 	# Data segment
-	movl $0, 16(%ecx)
-	movl $0x00009200, 20(%ecx)
+	movl $0, 0x10(%ecx)
+	movl $0x00009200, 0x14(%ecx)
+
+	# Userspace code segment
+	movl $0, 0x20(%ecx)
+	movl $0x0020F800, 0x24(%ecx)
+
+	# Userspace data segment
+	movl $0, 0x18(%ecx)
+	movl $0x0000F200, 0x1c(%ecx)
+
+	# TSS Segment
+
+	# First 16-bits is segment limit which is 8 kb(8192)
+	movw $TSS_SIZE, 0x28(%ecx)
+	movl $(page_tables_base_mb + TSS_OFFS), %eax
+	subl $0x100000, %eax
+	movw %ax, 0x2a(%ecx)
+	# Mov bits 16 - 23 into the next byte
+	shr $0x10, %eax
+	movb %al, 0x2c(%ecx)
+	# Segment is present, and the type is a 64-bit tss (9)
+	movb $0x89, 0x2d(%ecx)
+	# upper bits of segment limit are 0
+	movb $0x0, 0x2e(%ecx)
+	# bits 24 - 31 are in the next byte
+	movb %ah, 0x2f(%ecx)
+	# Now move the upper 32-bits of the tss offset into the next 32-bits
+	movl $0xffffff7f, 0x30(%ecx)
+	# The highest 32-bits are reserved
+	xor %eax, %eax
+	movl %eax, 0x34(%ecx)
+
+	# Remember to clear the tss segment too
+	movl $(page_tables_base_mb + TSS_OFFS), %edi
+	movl $((IOPB_OFFS - TSS_OFFS) >> 2), %ecx
+	# eax is 0 from above
+	rep stosl
+
+	movl $8193, %ecx
+	mov $0xff, %ax
+	rep stosb
+
+	# Set the IOPB base ptr correctly
+	movl IOPB, %eax
+	movl %eax, (page_tables_base_mb + TSS_OFFS + 0x68)
+
 	ret

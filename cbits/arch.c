@@ -35,6 +35,28 @@ void arch_map_page(mem_allocator_t *allocator, uintptr_t virt, uintptr_t phys)
   ARCH_INVALIDATE_PAGE(virt);
 }
 
+void arch_mark_user(uintptr_t virt)
+{
+  int pml4_entry = PML4_ENTRY(virt),
+    pdpt_entry = PDPT_ENTRY(virt),
+    pdt_entry = PDT_ENTRY(virt),
+    pt_entry = PT_ENTRY(virt);
+
+  uintptr_t *pml4 = (uintptr_t *) CUR_PML4_ADDR,
+    *pdpt = (uintptr_t *) CUR_PDPT_ADDR(pml4_entry),
+    *pdt = (uintptr_t *) CUR_PDT_ADDR(pml4_entry, pdpt_entry),
+    *pt = (uintptr_t *) CUR_PT_ADDR(pml4_entry, pdpt_entry, pdt_entry);
+
+  if (!pml4[pml4_entry]) return;
+  if (!pdpt[pdpt_entry]) return;
+  if (!pdt[pdt_entry]) return;
+
+  pml4[pml4_entry] |= 4;
+  pdpt[pdpt_entry] |= 4;
+  pdt[pdt_entry] |= 4;
+  pt[pt_entry] |= 4;
+}
+
 uintptr_t arch_unmap_page(uintptr_t virt)
 {
   int pml4_entry = PML4_ENTRY(virt),
