@@ -14,7 +14,7 @@ all: ../build/libcbits.a
 
 ../build/cbits/%.S: %.c
 	mkdir -p ../build/cbits
-	$(CROSSCOMPILE_CLANG) $< -S -I . -I ../rts $(CFLAGS) -o $@
+	$(CROSSCOMPILE_CLANG) $< -S -I . -I ../rts $(CFLAGS) -o $@ -D _JHC_BAREBONES=1
 
 ../build/cbits/%.o: ../build/cbits/%.S
 	mkdir -p ../build/cbits

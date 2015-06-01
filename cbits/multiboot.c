@@ -26,7 +26,7 @@ typedef struct {
 typedef struct {
   uint32_t mod_phys_start, mod_phys_end;
   char mod_cmdline[120];
-} __attribute__((aligned)) mboot_module_info_t;
+} __attribute__((packed)) mboot_module_info_t;
 
 struct multiboot_info *g_mboot_hdr_ptr;
 extern int kernel_size;
@@ -56,14 +56,19 @@ uintptr_t temp_pages[4];
 #define TEMP_PAGES_COUNT (sizeof(temp_pages) / sizeof(temp_pages[0]))
 
 uintptr_t _alloc_from_regions(mem_allocator_t *temp_page_allocator, regions_t *regions, size_t sz);
-
+#ifdef KERNEL
+void write_serial(char c);
+#endif
 void klog(const char *c)
 {
 #ifdef KERNEL
-  static char *vBuf = (char *) REAL_MODE_ADDR(0xb8000UL);
-  for (;*c != 0; ++c, vBuf += 2) {
-    vBuf[1] = '\x04';
-    vBuf[0] = *c;
+  /* static char *vBuf = (char *) REAL_MODE_ADDR(0xb8000UL); */
+  /* for (;*c != 0; ++c, vBuf += 2) { */
+  /*   vBuf[1] = '\x0C'; */
+  /*   vBuf[0] = *c; */
+  /* } */
+  for (; *c != 0; ++c) {
+    write_serial(*c);
   }
 #else
   printf("klog: %s\n", c);
@@ -249,7 +254,7 @@ void copy_modules(struct multiboot_info *mboot, mboot_module_info_t *module_info
     module_info[i].mod_phys_start = mods[i].mod_start;
     module_info[i].mod_phys_end = mods[i].mod_end;
 
-    strncpy(module_info[i].mod_cmdline, mod_cmdline, sizeof(module_info[i].mod_cmdline) - 1);
+    strncpy(module_info[i].mod_cmdline, mod_cmdline, 120);
     (*module_count)++;
   }
 }
@@ -270,7 +275,7 @@ void bootstrap_kernel()
     uint64_t cur_phys_addr = g_mboot_modules[0].mod_phys_start;
     uint64_t cur_virt_addr = 0x400000;
 
-    while ( cur_phys_addr < g_mboot_modules[0].mod_phys_end ) {
+    while ( cur_phys_addr < (g_mboot_modules[0].mod_phys_end + ARCH_PAGE_SIZE - 1) ) {
       arch_map_page(&buddy_page_allocator, cur_virt_addr, cur_phys_addr);
       arch_mark_user(cur_virt_addr);
       cur_virt_addr += ARCH_PAGE_SIZE;
@@ -476,9 +481,9 @@ uintptr_t alloc_from_regions(size_t sz)
    * The mapping allocator uses a new allocator which dishes out pages from our cache;
    */
   /* temp pages contains the physical addresses of the pages to allocate */
-  /* klog("Declare static page allocator "); */
   DECL_STATIC_PAGE_ALLOCATOR(temp_pages, TEMP_PAGES_COUNT, NULL, temp_page_allocator);
-  return _alloc_from_regions(&temp_page_allocator, &g_buddy_regions, sz);
+  uintptr_t ret = _alloc_from_regions(&temp_page_allocator, &g_buddy_regions, sz);
+  return ret;
 }
 
 uintptr_t _alloc_from_regions(mem_allocator_t *temp_page_allocator, regions_t *regions, size_t sz)
@@ -559,4 +564,15 @@ void jhc_hs_init_msg()
 void amain_msg()
 {
   klog("amain init ");
+}
+
+void arch_unmap_init_task()
+{
+  if ( g_module_count >= 1 ) {
+    uint64_t cur_virt_addr = 0x400000;
+    while ( (cur_virt_addr - 0x400000) < (g_mboot_modules[0].mod_phys_end - g_mboot_modules[0].mod_phys_start) ) {
+      arch_unmap_page(cur_virt_addr);
+      cur_virt_addr += ARCH_PAGE_SIZE;
+    }
+  }
 }

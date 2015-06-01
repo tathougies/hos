@@ -2,7 +2,12 @@ name: hos-containers
 version: 0.1.0.0
 exposed-modules:
    - Data.Set
+   - Data.Map
+   - Data.Map.Lazy
    - Data.PQueue.Min
+   - Data.PQueue.Prio.Min
+   - Control.DeepSeq
+   - Data.Map.Base
 hidden-modules:
    - Data.Utils.StrictFold
    - Data.Utils.StrictPair
@@ -10,3 +15,7 @@ hidden-modules:
    - Data.PQueue.Prio.Internals
 build-depends:
    - applicative
+include:
+   - hos-containers
+extensions:
+   - cpp

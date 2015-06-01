@@ -56,31 +56,22 @@ void *memcpy(void *dest, const void *src, size_t n)
     return dest;
 }
 
+#define ALIGN(addr, size) (addr & ~(size - 1))
 void *ext_page_aligned_alloc(size_t sz)
 {
-  uintptr_t phys_page = alloc_from_regions(sz);
   uintptr_t ret = 0;
-  size_t mapped_size, aligned_sz;
+  size_t mapped_size;
 
   if (sz < ARCH_PAGE_SIZE) {
     klog("page aligned alloc less than size");
     klog_hex(sz);
   }
 
-  aligned_sz = (1UL << ARCH_LOWEST_SET_BIT(phys_page));
-  if ( aligned_sz < sz ) {
-    klog("Error: got ");
-    klog_hex(phys_page);
-    klog(" in response to ");
-    klog_hex(sz);
-  }
-  assert(aligned_sz >= sz);
-
-  for (mapped_size = 0; mapped_size < aligned_sz; mapped_size += ARCH_PAGE_SIZE) {
+  for (mapped_size = 0; mapped_size < ALIGN((sz + ARCH_PAGE_SIZE - 1), ARCH_PAGE_SIZE); mapped_size += ARCH_PAGE_SIZE) {
+    uintptr_t phys_page = alloc_from_regions(ARCH_PAGE_SIZE);
     uintptr_t virt_page = heap_next_page(&jhc_heap);
     if (!ret) ret = virt_page;
     arch_map_page(&buddy_page_allocator, virt_page, phys_page);
-    phys_page += ARCH_PAGE_SIZE;
   }
   return (void *) ret;
 }
@@ -103,13 +94,11 @@ void ext_free(void *ptr)
 
 struct s_megablock *ext_alloc_megablock()
 {
-  klog("ext_alloc_megablock ");
   return (struct s_megablock *) MEM_ALLOC(&s_megablock_allocator);
 }
 
 struct s_cache *ext_alloc_cache()
 {
-  klog("ext_alloc_cache ");
   return (struct s_cache *) MEM_ALLOC(&s_cache_allocator);
 }
 
@@ -159,6 +148,14 @@ char *strncpy(char *dest, const char *src, size_t n)
     return ret;
 }
 
-void jhc_exit() { for (;;); }
+void jhc_exit(int c) {
+  if (c == 0)
+    klog("The Haskell kernel says bye-bye now");
+  else {
+    klog("Kernel left because of error: ");
+    klog_hex(c);
+  }
+  for (;;) asm("hlt");
+}
 
 /* Some floating point stuff */

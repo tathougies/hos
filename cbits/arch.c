@@ -102,5 +102,68 @@ uintptr_t arch_get_phys_page(uintptr_t virt)
   return PAGE_ADDR(pt[pt_entry]);
 }
 
+void report_sse_panic()
+{
+  klog("The kernel panicked because it attempted to steal userspace state from Haskell-land\n");
+  for(;;) asm("hlt");
+}
+
+void report_kernel_panic(uint64_t trap, uint64_t err_code, uint64_t rip, uint64_t rflags)
+{
+  klog("The kernel panicked on trap number ");
+  klog_hex(trap);
+  klog(".\n The error code was ");
+  klog_hex(err_code);
+  klog(".\n We were at RIP ");
+  klog_hex(rip);
+  if ( (trap & 0xff) == 14) {
+    uint64_t access;
+    asm("mov %%cr2, %%rax" : "=a"(access));
+    klog(".\n The access was ");
+    klog_hex(access);
+  }
+
+  uint64_t *userspaceState = (uint64_t *)(((uintptr_t)&kernelState) + 8);
+  klog("Registers:\n");
+  klog("RAX=");
+  klog_hex(userspaceState[0]);
+  klog(" RBX=");
+  klog_hex(userspaceState[1]);
+  klog(" RCX=");
+  klog_hex(userspaceState[2]);
+  klog(" RDX=");
+  klog_hex(userspaceState[3]);
+  klog("\nRSI=");
+  klog_hex(userspaceState[4]);
+  klog(" RDI=");
+  klog_hex(userspaceState[5]);
+  klog(" R8=");
+  klog_hex(userspaceState[6]);
+  klog(" R9=");
+  klog_hex(userspaceState[7]);
+  klog("\nR10=");
+  klog_hex(userspaceState[8]);
+  klog(" R11=");
+  klog_hex(userspaceState[9]);
+  klog(" R12=");
+  klog_hex(userspaceState[10]);
+  klog(" R13=");
+  klog_hex(userspaceState[11]);
+  klog("\nR14=");
+  klog_hex(userspaceState[12]);
+  klog(" R15=");
+  klog_hex(userspaceState[13]);
+
+  klog("\nRIP=");
+  klog_hex(rip);
+  klog(" RSP=");
+  klog_hex(userspaceState[15]);
+  klog(" RBP=");
+  klog_hex(userspaceState[16]);
+  klog(" RFLAGS=");
+  klog_hex(rflags);
+
+  asm("cli\nhlt");
+}
 
 #endif

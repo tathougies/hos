@@ -11,7 +11,7 @@ SECTIONS
 	/* First put the multiboot header, as it is required to be put very early
 	   early in the image or the bootloader won't recognize the file format.
 	   Next we'll put the .text section. */
-	.text BLOCK(4K) : ALIGN(4K)
+	.text 0x400000 : ALIGN(4K)
 	{
 		*(.text)
 	}
@@ -33,6 +33,7 @@ SECTIONS
 		_bss_start = .;
 		*(COMMON)
 		*(.bss)
+		_bss_end = .;
 	}
         _end = .;
 	_heap_start = ALIGN(4k);

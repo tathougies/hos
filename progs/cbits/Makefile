@@ -1,5 +1,5 @@
 include ../../build.opts
-CBITS_C_SOURCES=syscall.c
+CBITS_C_SOURCES=syscall.c dlmalloc.c hos.c
 CBITS_AS_SOURCES=start.S
 
 CBITS_OBJECTS=$(addprefix ../../build/cbits-user/, $(CBITS_C_SOURCES:.c=.o) $(CBITS_AS_SOURCES:.S=.o))
@@ -13,7 +13,7 @@ all: ../../build/libcbits-user.a
 
 ../../build/cbits-user/%.S: %.c
 	mkdir -p ../../build/cbits-user
-	$(CROSSCOMPILE_CLANG) $< -S -I . -I ../../cbits -I ../../rts $(CFLAGS_USER) -o $@
+	$(CROSSCOMPILE_CLANG) $< -S -I . -I ../../cbits -I ../../rts $(CFLAGS_USER) -o $@ -DCLANG=1
 
 ../../build/cbits-user/%.o: ../../build/cbits-user/%.S
 	mkdir -p ../../build/cbits-user

@@ -190,7 +190,11 @@ gc_perform_gc(gc_t gc)
         }
         debugf("\n");
         gc_mark_deeper(&stack, &number_redirects); // Final marking
+#ifdef _JHC_BAREBONES
 	ext_free(stack.stack);
+#else
+	free(stack.stack);
+#endif
         s_cleanup_blocks(arena);
         if (JHC_STATUS) {
                 fprintf(stderr, "%3u - %6u Used: %4u Thresh: %4u Ss: %5u Ps: %5u Rs: %5u Root: %3u\n",
@@ -448,7 +452,11 @@ s_cleanup_blocks(struct s_arena *arena)
                         }
                         void *ptr = pg;
                         pg = SLIST_NEXT(pg, link);
+#ifdef _JHC_BAREBONES
                         ext_free(ptr);
+#else
+			free(ptr);
+#endif
                 }
         }
         struct s_cache *sc = SLIST_FIRST(&arena->caches);

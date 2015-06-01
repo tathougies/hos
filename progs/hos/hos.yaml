@@ -1,0 +1,10 @@
+name: hos
+version: 0.0.1
+exposed-modules:
+  - Hos.User.SysCall
+build-depends:
+  - applicative
+include:
+  - ../cbits
+extensions:
+  - ffi

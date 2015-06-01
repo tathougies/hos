@@ -14,6 +14,7 @@ import Data.Char
 import Data.IORef
 import Data.Monoid
 import Data.Bits
+import qualified Data.Map.Base as M
 
 import Foreign.Ptr
 import Foreign.Storable
@@ -32,35 +33,47 @@ data X64PageTableIndex = X64PageTableIndex
                        , x64PtI   :: !Int }
                        deriving (Show, Eq, Ord)
 
--- In Hos, our task abstraction is basically kernel level only
---
--- Each architecture provides the mechanisms necessary to enable
--- cooperative kernel-level context switching via forkIO.
+type X64HosState = HosState X64Registers X64PageTable X64Exception
 
 x64VideoBuffer :: IORef (Ptr Word8)
 x64VideoBuffer = unsafePerformIO $ newIORef (wordToPtr 0xffffff7f800b8000)
 
+foreign import "write_serial" writeSerial :: Word8 -> IO ()
 x64DebugLog:: String -> IO ()
-x64DebugLog s = let go (!ptr) [] = writeIORef x64VideoBuffer ptr
-                    go (!ptr) (!x:xs) = do poke ptr (fromIntegral (ord x))
-                                           poke (ptr `plusPtr` 1) (0x0f :: Word8)
-                                           go   (ptr `plusPtr` 2) xs
-                in readIORef x64VideoBuffer >>= \buf -> go buf s
+x64DebugLog s = let go {- ptr -} [] = writeSerial (fromIntegral (ord '\n')) -- 
+                    go {- ptr -} (!x:xs) = do writeSerial (fromIntegral (ord x))
+                                              --poke ptr (fromIntegral (ord x))
+                                              --poke (ptr `plusPtr` 1) (0x0f :: Word8)
+                                              go   {- (ptr `plusPtr` 2) -} xs
+                in {- readIORef x64VideoBuffer >>= \buf -> -} go {- buf -} s
 
+foreign import ccall "arch.h arch_unmap_init_task" x64UnmapInitTask :: IO ()
+foreign import ccall "arch.h &g_module_count" x64ModuleCount :: Ptr Int
 x64 :: Arch X64Registers X64PageTable X64Exception
 x64 = Arch
     { archPageSize = x64PageSize
     , archStackDirection = StackGrowsDown
+    , archInitProcessPhysBase = 0
+    , archUnmapInitTask = x64UnmapInitTask
 
     , archNewVirtMemTbl = x64NewVirtMemTbl
     , archMapKernel = x64MapKernel
     , archMapPage = x64MapPage
     , archUnmapPage = x64UnmapPage
+    , archCopyPhysPage = x64CopyPhysPage
 
     , archGetCurVirtMemTbl = x64GetCurVirtMemTbl
 
+    , archHandleException = x64HandleException
+
     , archReadyForUserspace = x64ReadyForUserspace
+    , archSwitchTasks = x64SwitchTasks
     , archSwitchToUserspace = x64SwitchToUserspace
+    , archReturnToUserspace = x64ReturnToUserspace
+    , archUserPanic = x64UserPanic
+
+    , archBootModuleCount = peek x64ModuleCount >>= return . fromIntegral
+    , archGetBootModule = x64GetBootModule
 
     , archDebugLog = x64DebugLog }
 
@@ -68,7 +81,7 @@ instance Registers X64Registers where
     registersForTask = x64TaskRegisters
 
 x64KernelPDPTEntry :: Int
-x64KernelPDPTEntry = 0x1ff
+x64KernelPDPTEntry = 0x1fe
 
 x64CurPt :: Int -> Int -> Int -> Ptr Word64
 x64CurPt pml4I pdptI pdtI = wordToPtr
@@ -118,7 +131,18 @@ x64PTIndex addr =
     in X64PageTableIndex pml4I pdptI pdtI ptI
 
 x64PageEntry :: Word64 -> MemoryPermissions -> Word64
-x64PageEntry a perms = (a .|. 3)
+x64PageEntry a (Privileged ReadWrite) = (a .|. 3)
+x64PageEntry a (Privileged ReadOnly) = (a .|. 1)
+x64PageEntry a (UserSpace ReadWrite) = (a .|. 7)
+x64PageEntry a (UserSpace ReadOnly) = (a .|. 5)
+
+x64PageEntryPermissions :: Word64 -> MemoryPermissions
+x64PageEntryPermissions x = case x .&. 7 of
+                              1 -> Privileged ReadOnly
+                              3 -> Privileged ReadWrite
+                              5 -> UserSpace ReadOnly
+                              7 -> UserSpace ReadWrite
+                              _ -> Privileged ReadOnly
 
 x64MapPage :: Word64 -> Word64 -> MemoryPermissions -> IO ()
 x64MapPage virt phys perms =
@@ -132,15 +156,58 @@ x64MapPage virt phys perms =
            ensurePageTable pdAddr index pAddr = do
              pEntry <- peekElemOff pdAddr index
              when (pEntry == 0) $ do
-               newPd <- cPageAlignedAlloc (fromIntegral (archPageSize x64))
-               pokeElemOff pdAddr index (newPd .|. 0x3)
+               newPd <- cPageAlignedPhysAlloc (fromIntegral (archPageSize x64))
+               pokeElemOff pdAddr index (x64PageEntry newPd perms)
+               archInvalidatePage (ptrToWord pAddr)
                memset pAddr 0 (fromIntegral (archPageSize x64))
+             pEntry <- peekElemOff pdAddr index
+             -- Now we want to ensure that the permissions are weaker than the permissions we were given
+             let newPermissions = case (oldPermissions, perms) of
+                                    (Privileged cur, Privileged new) -> Privileged (newPermsRW cur new)
+                                    (Privileged cur, UserSpace new) -> UserSpace (newPermsRW cur new)
+                                    (UserSpace cur, Privileged new) -> UserSpace (newPermsRW cur new)
+                                    (UserSpace cur, UserSpace new) -> UserSpace (newPermsRW cur new)
+                 newPermsRW ReadOnly x = x
+                 newPermsRW ReadWrite _ = ReadWrite
+
+                 oldPermissions = x64PageEntryPermissions pEntry
+
+                 newEntry = x64PageEntry (pEntry .&. (complement (fromIntegral (archPageSize x64) - 1))) newPermissions
+
+             when (newPermissions /= oldPermissions) $ do
+                  pokeElemOff pdAddr index newEntry
+                  archInvalidatePage (ptrToWord pAddr)
        ensurePageTable x64CurPml4 pml4I pdptPtr
        ensurePageTable pdptPtr pdptI pdtPtr
        ensurePageTable pdtPtr pdtI ptPtr
-       x64DebugLog ("PT at " ++ show ptPtr)
+
        pokeElemOff ptPtr ptI entry
        archInvalidatePage virt
+
+x64GetPhysPageEntry :: Word64 -> IO Word64
+x64GetPhysPageEntry virt =
+    do let X64PageTableIndex pml4I pdptI pdtI ptI = x64PTIndex virt
+
+           pdptPtr = x64CurPdpt pml4I
+           pdtPtr = x64CurPdt pml4I pdptI
+           ptPtr = x64CurPt pml4I pdptI pdtI
+
+       pmlEntry <- peekElemOff x64CurPml4 pml4I
+       if pmlEntry /= 0
+         then do
+           pdptEntry <- peekElemOff pdptPtr pdptI
+           if pdptEntry /= 0
+             then do
+               pdtEntry <- peekElemOff pdtPtr pdtI
+               if pdtEntry /= 0
+                 then peekElemOff ptPtr ptI
+                 else return 0
+             else return 0
+         else return 0
+
+x64GetPhysPage :: Word64 -> IO Word64
+x64GetPhysPage virt = do ptr <- x64GetPhysPageEntry virt
+                         return (ptr .&. 0xfffffffffffff000)
 
 x64UnmapPage :: Word64 -> IO ()
 x64UnmapPage virt =
@@ -159,6 +226,12 @@ x64UnmapPage virt =
              pokeElemOff ptPtr ptI 0
              archInvalidatePage virt
 
+x64CopyPhysPage :: Word64 -> Word64 -> IO ()
+x64CopyPhysPage src dest =
+    withMapping x64 (Privileged ReadOnly) miscPage1 src $ \srcP ->
+    withMapping x64 (Privileged ReadWrite) miscPage2 dest $ \destP ->
+    memcpy destP srcP (fromIntegral x64PageSize)
+
 x64GetCurVirtMemTbl :: IO X64PageTable
 x64GetCurVirtMemTbl = do pgTblAddr <- peekElemOff x64CurPml4 0x1ff
                          let pgTblAddrAligned = pgTblAddr .&. (complement (fromIntegral (archPageSize x64) - 1))
@@ -170,53 +243,182 @@ x64ReadyForUserspace :: IO ()
 x64ReadyForUserspace =
     -- Call the assembler code to enable the syscall/sysret function
     do x64SetupSysCalls
-
+       x64DebugLog ("Our kernel stack top is " ++ showHex (ptrToWord x64TempKernelStackTop) "")
        -- Next set RSP0 of our task segment to use our temporary stack
-       pokeElemOff (x64TssArea `plusPtr` 4) 0 (ptrToWord x64TempKernelStackTop)
+       poke (x64TssArea `plusPtr` 4) (ptrToWord x64TempKernelStackTop)
 
        -- Then set IST1 to use the temporary stack as well. Routines that enter the kernel will automatically set and unset IST1 to use the emergency stack
-       pokeElemOff (x64TssArea `plusPtr` 4) 4 (ptrToWord x64TempKernelStackTop)
+       poke (x64TssArea `plusPtr` 0x24) (ptrToWord x64TempKernelStackTop)
 
        -- Now set up fault handling interrupts
        idtPtr <- x64NewIDT
        x64LoadIdt idtPtr
 
+       poke x64KernelSSELock 0
+
 foreign import ccall "arch.h &curUserSpaceState" x64TaskStateTmp :: Ptr ()
 foreign import ccall "arch.h &kernelState" x64KernelState :: Ptr ()
 foreign import ccall "arch.h x64SwitchToUserspace" x64SwitchToUserspaceAsm :: Ptr () -> Ptr () -> IO Int
-x64SwitchToUserspace :: Task X64Registers X64PageTable -> IO (InterruptReason X64Exception)
-x64SwitchToUserspace t = do x64PokeTaskState t x64TaskStateTmp
-                            reason <- x64SwitchToUserspaceAsm (castPtr x64TaskStateTmp) (castPtr x64KernelState)
-                            case reason of
-                              256 -> return (SysCallInterrupt 0)
-                              _ | reason < 256 -> return (TrapInterrupt (x64MapFault reason))
-                                | otherwise    -> return (DeviceInterrupt 0)
+foreign import ccall "arch.h &taskSwitchedSinceLastSSESave" x64TaskSwitchedSinceLastSSESave :: Ptr Word8
+foreign import ccall "arch.h x64WriteCR3" x64WriteCR3 :: Word64 -> IO ()
+x64SwitchTasks :: Task X64Registers X64PageTable -> Task X64Registers X64PageTable -> IO (Task X64Registers X64PageTable)
+x64SwitchTasks oldTask newTask =
+    do oldTask' <- x64PeekTaskState oldTask x64TaskStateTmp
+       x64PokeTaskState newTask x64TaskStateTmp
+       let X64PageTable newPml4 = taskVirtMemTbl newTask
 
-x64MapFault :: Int -> CPUException X64Exception
-x64MapFault 0 = DivideByZero
-x64MapFault 1 = DebugTrap
-x64MapFault 2 = ArchException X64NonMaskableInterrupt
-x64MapFault 3 = BreakpointTrap
-x64MapFault 4 = Overflow
-x64MapFault 5 = BoundsCheckFailed
-x64MapFault 6 = InvalidOpcode
-x64MapFault 7 = ArchException X64DeviceNotAvailable
-x64MapFault 8 = ArchException X64DoubleFault
-x64MapFault 9 = ArchException X64LegacyCoprocessorOverrun
-x64MapFault 10 = ArchException X64InvalidTSS
-x64MapFault 11 = ArchException X64SegmentNotPresent
-x64MapFault 12 = ArchException X64StackSegmentFault
-x64MapFault 13 = ProtectionException
-x64MapFault 14 = VirtualMemoryFault
-x64MapFault 15 = UnknownException
-x64MapFault 16 = FloatingPointException
-x64MapFault 17 = AlignmentCheck
-x64MapFault 18 = MachineCheck
-x64MapFault 19 = SIMDException
-x64MapFault 20 = VirtualMachineException
-x64MapFault 30 = ArchException X64SecurityException
-x64MapFault _ = UnknownException
+       -- Since we're switching tasks, we will need to check the SSE state before letting the new task use FP instructions
+       poke x64TaskSwitchedSinceLastSSESave 1
 
--- Switches tasks. If the function returns, it will be because another task
--- switched to this one. In that case, the return value is the task that
--- switched to us
+       x64WriteCR3 newPml4
+       return oldTask'
+
+x64UserPanic :: IO ()
+x64UserPanic = do regs <- peek (castPtr x64TaskStateTmp `plusPtr` 8 :: Ptr X64GPRegisters)
+                  x64DebugLog "Panic in init task: "
+                  x64DebugLog (show regs)
+
+foreign import ccall "arch.h &g_mboot_modules" x64BootModules :: Ptr ()
+x64GetBootModule :: Word8 -> Ptr a -> IO ()
+x64GetBootModule i p = do let moduleInfo = x64BootModules `plusPtr` (fromIntegral i * 128)
+                          memcpy (castPtr p) (castPtr moduleInfo) 128
+
+x64SwitchToUserspace :: IO (InterruptReason X64Exception)
+x64SwitchToUserspace = do -- We're going to be returning to some location in userspace, but we
+                          -- don't know if the location is mapped into memory or not. If it is not
+                          -- we will simulate a VirtualMemoryFault so that the location can be mapped in
+
+                          rip <- x64GetUserRIP
+                          returnPhysPage <- x64GetPhysPageEntry rip
+                          let returnPageIsPresent = testBit returnPhysPage x64_PAGE_PRESENT_BIT
+                          if returnPageIsPresent
+                             then do
+                               reason <- x64SwitchToUserspaceAsm (castPtr x64TaskStateTmp) (castPtr x64KernelState)
+                               case reason of
+                                 256 -> x64GetUserSyscall >>= return . SysCallInterrupt
+                                 _ | reason < 256 -> x64MapFault reason >>= return . TrapInterrupt
+                                   | otherwise    -> return (DeviceInterrupt 0)
+                             else -- Simulate the VM fault
+                                 return (TrapInterrupt (VirtualMemoryFault FaultOnInstructionFetch rip))
+
+x64ReturnToUserspace :: Word64 -> IO ()
+x64ReturnToUserspace = poke ((castPtr x64TaskStateTmp) `plusPtr` 8)
+
+x64GetUserRIP :: IO Word64
+x64GetUserRIP = peek ((castPtr x64TaskStateTmp) `plusPtr` (15 * 8))
+
+x64GetUserSyscall :: IO SysCall
+x64GetUserSyscall =
+    do sysCallNumW <- peek ((castPtr x64TaskStateTmp :: Ptr Word64) `plusPtr` 8)
+       -- We allow up to a maximum of five arguments, passed in rdi, rsi, rdx, r8, r9
+       sysCallArg1W <- peek ((castPtr x64TaskStateTmp :: Ptr Word64) `plusPtr` (6 * 8))
+       sysCallArg2W <- peek ((castPtr x64TaskStateTmp :: Ptr Word64) `plusPtr` (5 * 8))
+       sysCallArg3W <- peek ((castPtr x64TaskStateTmp :: Ptr Word64) `plusPtr` (4 * 8))
+       sysCallArg4W <- peek ((castPtr x64TaskStateTmp :: Ptr Word64) `plusPtr` (7 * 8))
+       sysCallArg5W <- peek ((castPtr x64TaskStateTmp :: Ptr Word64) `plusPtr` (8 * 8))
+       sysCallInfoPtrW <- peek ((castPtr x64TaskStateTmp :: Ptr Word64) `plusPtr` 16)
+       case sysCallNumW of
+         0 -> readCString (wordToPtr sysCallArg1W) >>= return . DebugLog
+         1 -> return (CurrentAddressSpace (TaskId (fromIntegral sysCallArg1W)))
+         2 -> do mapping <- peek (wordToPtr sysCallArg4W)
+                 return (AddMapping (AddressSpaceRef (fromIntegral sysCallArg1W))
+                                    (AR (fromIntegral sysCallArg2W) (fromIntegral sysCallArg3W))
+                                    mapping)
+         4 -> return (CloseAddressSpace (AddressSpaceRef (fromIntegral sysCallArg1W)))
+         5 -> return (SwitchToAddressSpace (TaskId (fromIntegral sysCallArg1W)) (AddressSpaceRef (fromIntegral sysCallArg2W)))
+         0x400 -> return (KillTask (TaskId (fromIntegral sysCallArg1W)))
+         0x401 -> return CurrentTask
+         0x402 -> return Fork
+         0x403 -> return Yield
+         0xff00 -> return ModuleCount
+         0xff01 -> return (GetModuleInfo (fromIntegral sysCallArg1W) (wordToPtr sysCallArg2W))
+         _ -> return MalformedSyscall
+
+foreign import ccall "arch.h &x64TrapErrorCode" x64TrapErrorCode :: Ptr Word64
+foreign import ccall "arch.h x64ReadCR2" x64ReadCR2 :: IO Word64
+x64MapFault :: Int -> IO (CPUException X64Exception)
+x64MapFault 0 = return DivideByZero
+x64MapFault 1 = return DebugTrap
+x64MapFault 2 = return $ ArchException X64NonMaskableInterrupt
+x64MapFault 3 = return BreakpointTrap
+x64MapFault 4 = return Overflow
+x64MapFault 5 = return BoundsCheckFailed
+x64MapFault 6 = return InvalidOpcode
+x64MapFault 7 = return $ ArchException X64DeviceNotAvailable
+x64MapFault 8 = return $ ArchException X64DoubleFault
+x64MapFault 9 = return $ ArchException X64LegacyCoprocessorOverrun
+x64MapFault 10 = return $ ArchException X64InvalidTSS
+x64MapFault 11 = return $ ArchException X64SegmentNotPresent
+x64MapFault 12 = return $ ArchException X64StackSegmentFault
+x64MapFault 13 = return $ ProtectionException
+x64MapFault 14 = do location <- x64ReadCR2
+                    errCode <- peek x64TrapErrorCode
+                    let faultReason
+                            | testBit errCode 1 = FaultOnWrite
+                            | testBit errCode 4 = FaultOnInstructionFetch
+                            | otherwise = FaultOnRead
+                    return (VirtualMemoryFault faultReason location)
+x64MapFault 15 = return UnknownException
+x64MapFault 16 = return FloatingPointException
+x64MapFault 17 = return AlignmentCheck
+x64MapFault 18 = return MachineCheck
+x64MapFault 19 = return SIMDException
+x64MapFault 20 = return VirtualMachineException
+x64MapFault 30 = return $ ArchException X64SecurityException
+x64MapFault _ = return UnknownException
+
+-- TODO get rid of globals...
+x64LastSSETask :: IORef TaskId
+x64LastSSETask = unsafePerformIO (newIORef (TaskId 0))
+
+foreign import ccall "arch.h &kernelSavedSSEState" x64KernelSavedSSEState :: Ptr Word8
+foreign import ccall "arch.h &restoreSSEOnReturn" x64RestoreSSEOnReturn :: Ptr Word8
+foreign import ccall "arch.h &userSSESaveArea" x64UserSSESaveArea :: Ptr Word64
+foreign import ccall "arch.h &kernelSSELock" x64KernelSSELock :: Ptr Word8
+x64HandleException :: X64Exception -> X64HosState -> IO (Either String X64HosState)
+x64HandleException X64DeviceNotAvailable st =
+    do -- First, check if we need to store the old state, or if the last task has been killed
+       x64DebugLog "Locking SSE..."
+       poke x64KernelSSELock 1 -- This will trigger a panic if the kernel tries to do anything with SSE after this function runs. This is inevitable given the current broken handling of SSE in Hos. This lock lets us know if the error was caused by this bad handling or another error
+       lastSSETaskId <- readIORef x64LastSSETask
+       kernelSavedSSEState <- peek x64KernelSavedSSEState
+       let currentTaskId = hscCurrentTask (hosSchedule st)
+           Just currentTask = M.lookup currentTaskId (hosTasks st)
+       st' <- case M.lookup lastSSETaskId (hosTasks st) of
+                Nothing -> do -- the last task was killed, we should poke the current SSE state and set the restoresseonreturn flag
+                              x64PokeSSEState x64UserSSESaveArea (taskSavedRegisters currentTask)
+                              poke x64RestoreSSEOnReturn 1
+                              return st
+                Just lastTask
+                    -- if the last task is the current task and the kernel did not save sse state, there's no need to do anything
+                    -- we won't even need to restore anything
+                    | lastSSETaskId == currentTaskId && kernelSavedSSEState == 0 ->
+                        do x64DebugLog "kernel did not steal SSe from current task... doing nothing"
+                           return st
+
+                    -- if the last task is the current task, but the kernel did save the state, all we have to do is restore on return
+                    | lastSSETaskId == currentTaskId && kernelSavedSSEState /= 0 ->
+                        do x64DebugLog "kernel stole SSE from current task... simply restoring..."
+                           poke x64RestoreSSEOnReturn 1
+                           return st
+
+                    -- otherwise, we need to get the last userspace SSE state and store it in the last task.
+                    -- then we need to poke our state to the save area, and set the restore on return flag
+                    | otherwise -> do x64DebugLog ("Going to save and restore... kerneldSavedSSEState = " ++ show kernelSavedSSEState)
+                                      lastTaskRegisters' <- case kernelSavedSSEState of
+                                                              0 -> x64SSEStateFromRegisters (taskSavedRegisters lastTask)
+                                                              _ -> x64PeekSSEState x64UserSSESaveArea (taskSavedRegisters lastTask)
+                                      let lastTask' = lastTask { taskSavedRegisters = lastTaskRegisters' }
+                                          tasks' = M.insert lastSSETaskId lastTask' (hosTasks st)
+                                          st' = st { hosTasks = tasks' }
+
+                                          Just currentTask' = M.lookup currentTaskId tasks'
+                                      x64PokeSSEState x64UserSSESaveArea (taskSavedRegisters currentTask')
+                                      poke x64RestoreSSEOnReturn 1
+                                      x64DebugLog ("Restored old task state, and saved current state in old task (" ++ show lastSSETaskId ++ ")")
+                                      return st'
+       poke x64TaskSwitchedSinceLastSSESave 0
+       poke x64KernelSavedSSEState 0
+       writeIORef x64LastSSETask (hscCurrentTask (hosSchedule st))
+       return (Right st')
+x64HandleException x _ = return (Left ("Unhandled Exception " ++ show x))

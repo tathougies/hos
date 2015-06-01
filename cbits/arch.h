@@ -41,9 +41,23 @@
     asm("invlpg (%%rax)" : :  "a"(x));		\
   } while(0)
 
+inline uint64_t x64ReadCR2() {
+  uint64_t ret;
+  asm ( "mov %%cr2, %%rax" : "=a"(ret) );
+  return ret;
+}
+
+inline void x64WriteCR3(uint64_t cr3) {
+  asm ( "mov %%rax, %%cr3" : : "a"(cr3));
+}
+
 void setupSysCalls();
 extern int curUserSpaceState;
 extern int kernelState;
+extern uint8_t kernelSavedSSEState, taskSwitchedSinceLastSSESave, restoreSSEOnReturn;
+extern volatile uint8_t kernelSSELock;
+extern uint64_t userSSESaveArea, userSSETmpSaveArea;
+extern uint64_t x64TrapErrorCode;
 int x64SwitchToUserspace(void *newState, void *oldState);
 
 void trap0();
@@ -85,6 +99,10 @@ extern int kernelFaultStack;
 extern int kernelFaultStack_top;
 extern int tssArea;
 extern int iopb;
+#ifdef COMPILING_HS_KERNEL
+extern int g_module_count;
+extern int g_mboot_modules; /* Wrong type just for Haskell import */
+#endif
 
 inline void loadIdt(void *idtP) { asm ("lidt (%%rax)" : : "a"(idtP)); };
 

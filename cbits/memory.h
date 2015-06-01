@@ -213,6 +213,7 @@ void arch_map_page(mem_allocator_t *allocator, uintptr_t virt, uintptr_t phys);
 uintptr_t arch_get_phys_page(uintptr_t virt);
 uintptr_t arch_unmap_page(uintptr_t virt);
 void arch_mark_user(uintptr_t virt);
+void arch_unmap_init_task();
 
 #endif
 

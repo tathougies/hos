@@ -7,6 +7,8 @@ import Control.Monad
 import Control.Exception
 
 import Data.Word
+import Data.Char
+import qualified Data.IntervalMap as IntervalMap
 
 import Foreign.Ptr
 import Foreign.Storable
@@ -21,4 +23,20 @@ withMapping a perms v p f =
             (\_ -> f (wordToPtr v))
 
 memset :: Ptr a -> Word8 -> Word64 -> IO ()
-memset p c sz = forM_ [0..(sz-1)] $ \i -> pokeElemOff (castPtr p) (fromIntegral i) c
+memset !p !c 0 = return ()
+memset !p !c sz = poke (castPtr p) c >> memset (p `plusPtr` 1) c (sz - 1)
+
+memcpy :: Ptr a -> Ptr a -> Word64 -> IO ()
+memcpy !dst !src 0 = return ()
+memcpy !dst !src sz = peek (castPtr src :: Ptr Word8) >>= poke (castPtr dst) >>
+                      memcpy (dst `plusPtr` 1) (src `plusPtr` 1) (sz - 1)
+
+readCString :: Ptr Word8 -> IO String
+readCString p = go p id
+    where go p a = do c <- peek p
+                      if c == 0
+                        then return (a [])
+                        else go (p `plusPtr` 1) (a . (chr (fromIntegral c):))
+
+addrSpaceWithMapping :: Word64 -> Word64 -> Mapping -> AddressSpace -> AddressSpace
+addrSpaceWithMapping start end = IntervalMap.insert (start, end)

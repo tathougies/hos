@@ -9,7 +9,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
 #include <wchar.h>
 #include <setjmp.h>
 #ifndef __WIN32__

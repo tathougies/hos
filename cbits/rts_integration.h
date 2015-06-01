@@ -16,7 +16,7 @@ void jhc_case_fell_off(int line);
 void jhc_error(char *s);
 
 inline void jhc_utf8_putchar(int c) { };
-void jhc_exit();
+void jhc_exit(int c);
 inline void ext_halt() { for (;;); };
 inline uintptr_t ptrToWord(void *p) { return (uintptr_t) p; }
 inline void *wordToPtr(uintptr_t p) { return (void *) p; }
@@ -40,7 +40,6 @@ inline double ceil(double x)
 inline double log(double x)
 {
   return __builtin_log(x);
-};
-
+}
 
 #endif

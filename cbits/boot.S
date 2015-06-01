@@ -53,7 +53,7 @@ end_page_tables:
 
 .set TSS_OFFS, . - page_tables_base
 .global tssArea
-tssArea: .skip 0x68
+tssArea: .skip 0x6C
 .set IOPB, . - tssArea
 .set IOPB_OFFS, . - page_tables_base
 iopb:
@@ -156,13 +156,49 @@ _longModeStart:
 	movq %rax, %cr4
 
 	movq %cr0, %rax
-	andq $(~0x4), %rax
-	orq $0x2, %rax
+	andq $(~0x4), %rax # Disable x87 emulation
+	orq $0x2, %rax # Enable monitor coprocessor bit
 	movq %rax, %cr0
+
+	# Now, the gdtr contains a stale gdt pointer. We'd like the gdtr to point to the correct higher-half address
+	movabsq $gdt_pointer, %rax
+	movw $GDT_SIZE, (%rax)
+	movabsq $gdt64, %rcx
+	movq %rcx, 2(%rax)
+	lgdt (%rax)
 
 	# Now, we can load the task register with our one and only TSS segment
 	movw $tssS, %ax
 	ltr %ax
+
+	# We're also going to initialize the serial port for kernel output, so that
+	# the kernel run-time system and the Haskell kernel have different means of
+	# communicating
+	.set COM1, 0x3f8
+	movb $0x00, %al
+	mov $(COM1 + 1), %dx
+	out %al, %dx # Disable interrupts
+	movb $0x80, %al
+	mov $(COM1 + 3), %dx
+	out %al, %dx # Enable DLAB (baud rate divisor)
+	movb $0x01, %al
+	mov $(COM1 + 0), %dx
+	outb %al, %dx # lo byte for 115200 baud
+	movb $0x00, %al
+	mov $(COM1 + 1), %dx
+	outb %al, %dx # hi byte
+	movb $0x03, %al
+	mov $(COM1 + 3), %dx
+	outb %al, %dx # 8-bits, no parity, one stop bit
+	movb $0xc7, %al
+	mov $(COM1 + 2), %dx
+	outb %al, %dx # Clear 14-byte FIFO
+	movb $0x0b, %al
+	mov $(COM1 + 4), %dx
+	outb %al, %dx # Enable RTS/DSR
+	movb $0x0, %al
+	mov $(COM1 + 1), %dx
+	outb %al, %dx # Disable interrupts
 
 	# Now we're going to call the initialize_regions function with the multiboot header
 	call bootstrap_kernel
@@ -180,6 +216,8 @@ _longModeStart:
 	# the next interrupt arrives, and jumping to the halt instruction if it ever
 	# continues execution, just to be safe. We will create a local label rather
 	# than real symbol and jump to there endlessly.
+	xorq %rdi, %rdi
+	call jhc_exit
 	cli
 	hlt
 .Lhang:
@@ -311,4 +349,20 @@ _setupGdt:
 	movl IOPB, %eax
 	movl %eax, (page_tables_base_mb + TSS_OFFS + 0x68)
 
+	ret
+
+write_serial:
+	.code64
+	.global write_serial
+	push %rdx
+	push %rax
+	mov $(0x3f8 + 5), %dx
+wait:	inb %dx, %al
+	testb $0x20, %al
+	jz wait
+	mov $0x3f8, %dx
+	mov %rdi, %rax
+	outb %al, %dx
+	pop %rax
+	pop %rdx
 	ret

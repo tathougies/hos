@@ -5,10 +5,10 @@ xmmPrevState:	.quad 0
 
 .section .bss
 curUserSpaceState:
-	.skip 216 # 18 registers + 512-bit fxsave area + 1 quad word reason
+	.skip 0x298 # 18 registers + 512-byte fxsave area + 1 quad word reason
 		  # indicator
 kernelState:
-	.skip 208 # 18 registers  + 512-bit fxsave area
+	.skip 0x290 # 18 registers  + 512-byte fxsave area
 .global kernelState
 .global curUserSpaceState
 
@@ -17,12 +17,14 @@ kernelState:
 .global kernelTmpStack_top
 .global kernelFaultStack
 .global kernelFaultStack_top
-kernelTmpStack:
-	.skip 2048
-kernelTmpStack_top:
 kernelFaultStack:
-	.skip 4096
+	.skip 8192
 kernelFaultStack_top:
+kernelTmpStack:
+	.skip 8192
+kernelTmpStack_top:
+
+	.set IST1, tssArea + 0x24
 
 .section .text
 # We are called here from an interrupt. The interrupt number is on the stack,
@@ -39,22 +41,78 @@ serviceISR:
 	.set TRAP_REASON, 2
 	.set IRQ_REASON, 3
 
+	.set PUSHES_ERROR_CODE_FLAG, 0x200
+	.set IS_TRAP_FLAG, 0x100
+
+	.set USERSPACE_CODE_SELECTOR, 0x23
+	.set USERSPACE_DATA_SELECTOR, 0x1b
 	pushq %rax
 	pushq %rbx
+	pushq %rcx
 
-	movabsq $curUserSpaceState, %rax
+	mov $0x10, %ax
+	mov %ax, %ds
+	mov %ax, %es
+	mov %ax, %fs
+	mov %ax, %gs
+
+	# We set the interrupts to use the new fault stack so that we can
+	# detect if the error was in the kernel or not
+	movabsq $IST1, %rbx
+	movq (%rbx), %rcx # Save the old IST1 to check if the interrupt was from
+                          # within the kernel
+	movabsq $kernelFaultStack_top, %rax
+	mov %rax, (%rbx)
 
 	# Load the interrupt/trap number into rbx
 	# If bit 8 is set, then this is an IRQ. Otherwise, it's a trap
-	movq 0x10(%rsp), %rbx
-	test $0x100, %rbx
+	movq 0x18(%rsp), %rbx
+	test $IS_TRAP_FLAG, %rbx
 	jz itsATrap
-	movq $IRQ_REASON, (%rax)
+	movq $IRQ_REASON, %rax
 	jmp continueServiceISR
 itsATrap:
-	movq $TRAP_REASON, (%rax)
+	# If it's a trap, check if it may be the kernel by checking the IST1
+	# entry
+	movabsq $kernelFaultStack_top, %rax
+	cmpq %rax, %rcx
+	je inKernelFault
+	movq $TRAP_REASON, %rax
 continueServiceISR:
-	addq $0x8, %rax
+	movabsq $curUserSpaceState, %rcx
+	movq %rax, (%rcx)
+	# Now check if we're dealing with an error code or not
+	test $PUSHES_ERROR_CODE_FLAG, %rbx
+	mov $0x20, %rbx # Since rbx, rcx, and rax, and the interrupt number are on the stack, the exception information is
+	# 32 off the stack
+	jz noErrorCode # If there is no error code, continue with the ISR
+	mov 0x20(%rsp), %rbx # Save the error code
+	movabsq $x64TrapErrorCode, %rcx
+	movq %rbx, (%rcx)
+	mov $0x28, %rbx # We want to skip the error code
+noErrorCode:
+	movabsq $(curUserSpaceState + 8), %rax
+	# Now, save the rip and eflags from the stack
+	mov (%rsp, %rbx, 1), %rcx
+	mov %rcx, (RIP_I * 8)(%rax)
+	mov 0x10(%rsp, %rbx, 1), %rcx
+	mov %rcx, (RFLAGS_I * 8)(%rax)
+
+	# Now, check if this was from userspace or kernel land, and set the
+	# stack approrpriately
+	mov 0x8(%rsp, %rbx, 1), %rcx
+	cmp $USERSPACE_CODE_SELECTOR, %rcx
+	jz fromUserspace
+
+	# We're coming from the kernel, so rsp is simply the %rsp + %rbx + 24
+	leaq 0x18(%rsp, %rbx, 1), %rbx
+	jmp doneWithStack
+
+fromUserspace:
+	movq 0x18(%rsp, %rbx, 1), %rbx
+doneWithStack:
+	movq %rbx, (RSP_I * 8)(%rax)
+	popq %rcx
 	popq %rbx
 
 	# now save user space state
@@ -78,16 +136,136 @@ continueServiceISR:
 
 	# Since we came from a syscall, rcx contains the rip to return to, and
 	# r11 the old rflags
-	movq %rcx, (RIP_I * 8)(%rbx)
-	movq %rsp, (RSP_I * 8)(%rbx)
 	movq %rbp, (RBP_I * 8)(%rbx)
-	movq %r11, (RFLAGS_I * 8)(%rbx)
 
 	# TODO save xmm state
 
 	# Pop the interrupt number from rax and call restoreKernelState
 	popq %rax
+	# We don't pass along information on the error pointer to Haskell
+	# The x64-specific code already knows which ones produced an error
+	# code or not
+	andq $(0xff | IS_TRAP_FLAG), %rax
 	jmp restoreKernelState
+
+inKernelFault:
+	# Test if the RTS can handle this fault
+	# Exception 7 is a device not available exception, which means we
+	# switched tasks and are lazily loading the state
+	cmpq $0x7, %rbx
+	je inKernelNMException
+continueInKernelFault:
+	popq %rcx
+	popq %rbx
+	movabsq $(kernelState + 8), %rax
+	movq %rbx, (RBX_I*8)(%rax)
+	popq %rax
+
+	# Save kernel state
+	movabsq $(kernelState + 8), %rbx
+	movq %rax, (RAX_I*8)(%rbx)
+	movq %rcx, (RCX_I*8)(%rbx)
+	movq %rdx, (RDX_I*8)(%rbx)
+	movq %rsi, (RSI_I * 8)(%rbx)
+	movq %rdi, (RDI_I * 8)(%rbx)
+	movq %r8, (R8_I * 8)(%rbx)
+	movq %r9, (R9_I * 8)(%rbx)
+	movq %r10, (R10_I * 8)(%rbx)
+	movq %r11, (R11_I * 8)(%rbx)
+	movq %r12, (R12_I * 8)(%rbx)
+	movq %r13, (R13_I * 8)(%rbx)
+	movq %r14, (R14_I * 8)(%rbx)
+	movq %r15, (R15_I * 8)(%rbx)
+
+	# Load %rdi with the trap number
+	popq %rdi
+
+	movq %rsp, (RSP_I * 8)(%rbx)
+	movq %rbp, (RBP_I * 8)(%rbx)
+
+	# Check if we pushed an error code, and if so, put it in %rsi
+	movq $0x0, %rsi
+	test $PUSHES_ERROR_CODE_FLAG, %rdi
+	je continueWithPanic
+	popq %rsi
+continueWithPanic:
+	movq (%rsp), %rdx # RIP
+	movq 0x10(%rsp), %rcx # EFLAGS
+	callq report_kernel_panic
+
+# NM exception handling
+#
+# When we switch the current state for the kernel state, we save the userspace
+# state. We need to keep track of this by setting the kernelSavedSSEState flag.
+# This lets the runtime know that the last userspace process's state is in the
+# save area.
+#
+# The flag will be cleared the next time some userspace program tries to use floating
+# point instructions
+#
+# The task switched flag is set on entry to userspace if either kernelSavedSSEState
+# or taskSwitchedSinceLAstSSESave is 1
+inKernelNMException:
+	.set TASK_SWITCHED, 0x8
+	.set INVALID_TASK, 0xffffffff
+
+	movabsq $kernelSSELock, %rax
+	movb (%rax), %al
+	test %al, %al
+	jnz callNMPanic
+
+	# We're going to save the userspace registers
+	movabsq $kernelSavedSSEState, %rax
+	movb $0x1, (%rax)
+
+	# Clear the task switched bit so other kernel sse instructions do not cause NM exceptions
+	mov %cr0, %rax
+	andq $(~TASK_SWITCHED), %rax
+	mov %rax, %cr0
+
+	# Save the user state
+	movabsq $userSSESaveArea, %rax
+	fxsave (%rax)
+
+	pushq %rdi
+	movabsq $write_serial, %rax
+	mov $'s', %rdi
+	callq *%rax
+	mov $'s', %rdi
+	callq *%rax
+	mov $'e', %rdi
+	callq *%rax
+	mov $' ', %rdi
+	callq *%rax
+	mov $'s', %rdi
+	callq *%rax
+	mov $'a', %rdi
+	callq *%rax
+	mov $'v', %rdi
+	callq *%rax
+	mov $'e', %rdi
+	callq *%rax
+	mov $'e', %rdi
+	callq *%rax
+	mov $'0', %rdi
+	movabsq $kernelSSELock, %rbx
+	addq (%rbx), %rdi
+	callq *%rax
+	mov $'\n', %rdi
+	callq *%rax
+	popq %rdi
+
+	# Now simply return to kernel land, remembering to skip the interrupt
+	# number on the stack
+	popq %rcx
+	popq %rbx
+	popq %rax
+	lea 0x8(%rsp), %rsp
+	iretq
+
+callNMPanic:
+	movabsq $report_sse_panic, %rax
+	callq *%rax
 
 # We can switch contexts by loading the temp userspace stack,
 # changing the registers, and then far returning to userspace.
@@ -120,7 +298,6 @@ x64SwitchToUserspace:
 	.set RBP_I, 16
 	.set RFLAGS_I, 17
 
-	.set FXSAVE_I, 18
 	# Assumptions: Called when the kernel wants to restore the state of a
 	# userspace task and give control back to userspace.
 	# Called using x86_64 abi with two arguments, so RDI points to a struct
@@ -158,8 +335,6 @@ x64SwitchToUserspace:
 
 	# Now restore the user state
 	addq $0x8, %rdi
-	movq (RAX_I * 8)(%rdi), %rax
-	movq (RBX_I * 8)(%rdi), %rbx
 	movq (RCX_I * 8)(%rdi), %rcx
 	movq (RDX_I * 8)(%rdi), %rdx
 	movq (RSI_I * 8)(%rdi), %rsi
@@ -176,12 +351,55 @@ x64SwitchToUserspace:
 	movq (RBP_I * 8)(%rdi), %rbp
 	# skip rflags
 
+	# Now, set or clear the task switched bit as necessary.
+	# We clear the bit, unless either kernelSavedSSEState, or taskSwitchedSinceLastSSESave is true
+	pushq %rax
+	movq %cr0, %rax
+	andq $(~TASK_SWITCHED), %rax # Clear the bit for now, but we may set it again depending on the status of kernelSavedSSEState or taskSwitchedSinceLastSSESave
+	movq %rax, %cr0
+
+	# We may have to restore the sse state, depending on what Haskell says
+	# if the restoreSSEOnReturn flag is non-zero, then we restore the state, and
+	# set the flag to 0
+	movabsq $restoreSSEOnReturn, %rbx
+	movb (%rbx), %bl
+	test %bl, %bl
+	jz doneRestoreSSEState
+restoreSSEState:
+	movabsq $userSSESaveArea, %rbx
+	fxrstor (%rbx)
+doneRestoreSSEState:
+	# Clear the restoreSSEOnReturn flag
+	movabsq $restoreSSEOnReturn, %rbx
+	movq $0, (%rbx)
+
+	movabsq $kernelSavedSSEState, %rbx
+	movb (%rbx), %bl
+	test %bl, %bl
+	jnz setTaskSwitchedOutOfKernel
+
+	movabsq $taskSwitchedSinceLastSSESave, %rbx
+	movb (%rbx), %bl
+	test %bl, %bl
+	jnz setTaskSwitchedOutOfKernel
+	jmp doneWithFPStateOutOfKernel
+setTaskSwitchedOutOfKernel:
+	orq $TASK_SWITCHED, %rax
+doneWithFPStateOutOfKernel:
+	movq %rax, %cr0
+	popq %rax
+
 	# Now restore segment selectors to the userspace ones
-	mov $0x1b, %rax
-	mov %ax, %ds
-	mov %ax, %es
-	mov %ax, %fs
-	mov %ax, %gs
+	mov $0x1b, %rbx
+	mov %bx, %ds
+	mov %bx, %es
+	mov %bx, %fs
+	mov %bx, %gs
+
+	movabsq $kernelSSELock, %rbx
+	movb $0, (%rbx) # Make sure the sse lock is turned off after we leave kernel space.
+
+	movq (RBX_I * 8)(%rdi), %rbx
 
 	# Now we're going to determine why we entered kernel space to begin
 	# with, and enter userspace accordingly.
@@ -194,13 +412,21 @@ x64SwitchToUserspace:
 	cmp $IRQ_REASON, %rax
 	je ret_irq
 
-	# If we don't know why we entered userspace, give up on life...
+	# If we don't know why we entered from userspace, give up on life...
 	cli
+	hlt
 
 ret_syscall:
 	# We were called by syscall, so we should use the sysret mechanism to
 	# return quickly. We just need to set rcx to the old rip and r11 to the
 	# old rflags. We also need to restore the userspace stack and rdi
+
+	# We also want to restore the IST1 entry to simply be the normal tmp stack
+	movabsq $kernelTmpStack_top, %rax
+	movabsq $IST1, %rcx
+	movq %rax, (%rcx)
+
+	movq (RAX_I * 8)(%rdi), %rax
 	movq (RSP_I * 8)(%rdi), %rsp
 	movq (RIP_I * 8)(%rdi), %rcx
 	movq (RFLAGS_I * 8)(%rdi), %r11
@@ -211,54 +437,79 @@ ret_trap:
 	# We're going to iret from this now. This will set the stack back to the
 	# normal kernel stack. We will need to push the old rip, the userspace
 	# cs, the old rflags, the userspace rsp, and the userspace ss
-	pushq (RIP_I * 8)(%rdi)
-	pushq $0x23 # Userspace CS
-	pushq (RFLAGS_I * 8)(%rdi)
-	pushq (RSP_I * 8)(%rdi)
+
+	# We also want to restore the IST1 entry to simply be the normal tmp
+	# stack
+	pushq %rbx
+	movabsq $IST1, %rax
+	movabsq $kernelTmpStack_top, %rbx
+	movq %rbx, (%rax)
+	popq %rbx
+
+	mov $0x1b, %ax
+	mov %ax, %ds
+	mov %ax, %es
+	mov %ax, %fs
+	mov %ax, %gs
+
+	movq (RAX_I * 8)(%rdi), %rax
 	pushq $0x1b # Userspace SS
+	pushq (RSP_I * 8)(%rdi)
+	pushq (RFLAGS_I * 8)(%rdi)
+	pushq $0x23 # Userspace CS
+	pushq (RIP_I * 8)(%rdi)
 	movq (RDI_I * 8)(%rdi), %rdi
-	iret
+	iretq
 
 serviceSyscall:
 	# First, we're going to store the state that we should return to in
-	# curUserSpaceState. This will be read by the haskell interrupt/syscall
+	# curUserSpaceState. Since this is a syscall. The calling program
+	# is responsible for storing any register that is not rbp, rbx, or
+	# r12-r15. This means we're free to mess around with the other
+	# registers, so we're not as strict about saving things as in serviceISR.
+	#
+	# This will be read by the haskell interrupt/syscall
 	# handler and saved as the current task context. Also in this structure
 	# is a field indicating how we entered kernel space. This determines how
 	# exactly we switch back into userspace.
-	pushq %rax # Save rax for now
-	movabsq $curUserSpaceState, %rax
 
-	# The first quad word indicates the reason we entered userspace
-	movq $SYSCALL_REASON, (%rax)
-	addq $0x8, %rax
+	# We're going to save the rsp pointer first so we can get a new stack
+	movabsq $curUserSpaceState, %r10
+	movq $SYSCALL_REASON, (%r10)
 
-	# now save user space state
-	movq %rbx, (RBX_I * 8)(%rax)
-	movq %rcx, (RCX_I * 8)(%rax)
-	movq %rdx, (RDX_I * 8)(%rax)
-	movq %rax, %rbx
-	popq %rax
-	movq %rax, (RAX_I * 8)(%rbx)
+	# Now save the registers
+	addq $0x8, %r10
+	movq %rsp, (RSP_I * 8)(%r10)
 
-	movq %rsi, (RSI_I * 8)(%rbx)
-	movq %rdi, (RDI_I * 8)(%rbx)
-	movq %r8, (R8_I * 8)(%rbx)
-	movq %r9, (R9_I * 8)(%rbx)
-	movq %r10, (R10_I * 8)(%rbx)
-	movq %r11, (R11_I * 8)(%rbx)
-	movq %r12, (R12_I * 8)(%rbx)
-	movq %r13, (R13_I * 8)(%rbx)
-	movq %r14, (R14_I * 8)(%rbx)
-	movq %r15, (R15_I * 8)(%rbx)
+	# We only need to save rbp, rbx, r12, r13, r14, and r15 to conform to
+	# the ABI
+
+	mov %rbp, (RBP_I * 8)(%r10)
+	mov %rbx, (RBX_I * 8)(%r10)
+	mov %r12, (R12_I * 8)(%r10)
+	mov %r13, (R13_I * 8)(%r10)
+	mov %r14, (R14_I * 8)(%r10)
+	mov %r15, (R15_I * 8)(%r10)
+
+	# We also have to save rax, rdi, rsi, rdx, r8, and r9 to pass in kernel
+	# arguments
+	mov %rax, (RAX_I * 8)(%r10)
+	mov %rdi, (RDI_I * 8)(%r10)
+	mov %rsi, (RSI_I * 8)(%r10)
+	mov %rdx, (RDX_I * 8)(%r10)
+	mov %r8, (R8_I * 8)(%r10)
+	mov %r9, (R9_I * 8)(%r10)
 
 	# Since we came from a syscall, rcx contains the rip to return to, and
 	# r11 the old rflags
-	movq %rcx, (RIP_I * 8)(%rbx)
-	movq %rsp, (RSP_I * 8)(%rbx)
-	movq %rbp, (RBP_I * 8)(%rbx)
-	movq %r11, (RFLAGS_I * 8)(%rbx)
+	movq %rcx, (RIP_I * 8)(%r10)
+	movq %r11, (RFLAGS_I * 8)(%r10)
 
-	# TODO save xmm state
+	# We set the interrupts to use the new fault stack so that we can
+	# detect if the error was in the kernel or not
+	movabsq $kernelFaultStack_top, %r11
+	movabsq $IST1, %r10
+	movq %r11, (%r10)
 
 	# Now, we're going to restore the kernel state, which will involve switching
 	# to the kernel stack. Once on that stack, we can simply do a ret to
@@ -291,10 +542,38 @@ restoreKernelState:
 	# rflags doesn't matter, since we'll be simulating a return from a
 	# function
 
-	# TODO restore kernel xmm state
+	call checkFPStateIntoKernel
 
 	# Now we're on the kernel stack, so we can issue a ret to return to the
 	# kernel, returning whatever we got
+	ret
+
+checkFPStateIntoKernel:
+	# Check if the kernelSavedSSEState flag is set.
+	# If it is, then we can clear task switched, otherwise, we must set it.
+	pushq %rax
+	movabsq $kernelSavedSSEState, %rax
+	movb (%rax), %al
+	test %al, %al
+	mov %cr0, %rax
+
+	jz setTaskSwitchedIntoKernel
+
+	# clear the task switched bit
+	andq $(~TASK_SWITCHED), %rax
+	jmp doneWithFPStateIntoKernel
+
+setTaskSwitchedIntoKernel:
+	orq $TASK_SWITCHED, %rax
+
+doneWithFPStateIntoKernel:
+	mov %rax, %cr0
+	popq %rax
+	ret
+
+.global fxSave
+fxSave:
+	fxsave (%rdi)
 	ret
 
 .global setupSysCalls
@@ -406,25 +685,25 @@ trap7:
 	pushq $7
 	jmp serviceISR
 trap8:
-	pushq $8
+	pushq $(8 | PUSHES_ERROR_CODE_FLAG)
 	jmp serviceISR
 trap9:
 	pushq $9
 	jmp serviceISR
 trap10:
-	pushq $10
+	pushq $(10 | PUSHES_ERROR_CODE_FLAG)
 	jmp serviceISR
 trap11:
-	pushq $11
+	pushq $(11 | PUSHES_ERROR_CODE_FLAG)
 	jmp serviceISR
 trap12:
-	pushq $12
+	pushq $(12 | PUSHES_ERROR_CODE_FLAG)
 	jmp serviceISR
 trap13:
-	pushq $13
+	pushq $(13| PUSHES_ERROR_CODE_FLAG)
 	jmp serviceISR
 trap14:
-	pushq $14
+	pushq $(14 | PUSHES_ERROR_CODE_FLAG)
 	jmp serviceISR
 trap15:
 	pushq $15
@@ -433,7 +712,7 @@ trap16:
 	pushq $16
 	jmp serviceISR
 trap17:
-	pushq $17
+	pushq $(17 | PUSHES_ERROR_CODE_FLAG)
 	jmp serviceISR
 trap18:
 	pushq $18
@@ -477,3 +756,32 @@ trap30:
 trap31:
 	pushq $31
 	jmp serviceISR
+
+	.section .bss
+	.align 16
+userSSESaveArea:
+	.global userSSESaveArea
+	.skip 0x200
+
+userSSETmpSaveArea:
+	.global userSSETmpSaveArea
+	.skip 0x200
+
+kernelSavedSSEState:
+	.section .data
+	.global kernelSavedSSEState
+	.byte 0
+
+taskSwitchedSinceLastSSESave:
+	.global taskSwitchedSinceLastSSESave
+	.byte 0
+restoreSSEOnReturn:
+	.global restoreSSEOnReturn
+	.byte 0
+	.align 8
+x64TrapErrorCode:
+	.global x64TrapErrorCode
+	.quad 0
+kernelSSELock:
+	.global kernelSSELock
+	.byte 0

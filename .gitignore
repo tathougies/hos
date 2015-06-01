@@ -1,3 +1,5 @@
+kernel.symbols
+kernel.out
 *~
 kernel.bin
 kernel.elf
