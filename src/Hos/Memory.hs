@@ -31,12 +31,5 @@ memcpy !dst !src 0 = return ()
 memcpy !dst !src sz = peek (castPtr src :: Ptr Word8) >>= poke (castPtr dst) >>
                       memcpy (dst `plusPtr` 1) (src `plusPtr` 1) (sz - 1)
 
-readCString :: Ptr Word8 -> IO String
-readCString p = go p id
-    where go p a = do c <- peek p
-                      if c == 0
-                        then return (a [])
-                        else go (p `plusPtr` 1) (a . (chr (fromIntegral c):))
-
 addrSpaceWithMapping :: Word64 -> Word64 -> Mapping -> AddressSpace -> AddressSpace
 addrSpaceWithMapping start end = IntervalMap.insert (start, end)

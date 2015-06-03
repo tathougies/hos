@@ -13,12 +13,14 @@ import Foreign.Storable
 foreign import ccall "syscall.h syscall" syscall :: Word64 -> Word64 -> Word64 -> Word64 -> Word64 -> Word64 -> IO Word64
 foreign import ccall "hos.h ptr_to_word" ptrToWord :: Ptr a -> Word64
 
-writeCString :: String -> (Ptr Char -> IO a) -> IO a
+writeCString :: String -> (Ptr Char -> Int -> IO a) -> IO a
 writeCString string f =
-    bracket (mallocBytes (length string + 1)) (free) $ \p ->
-      wrstr (castPtr p) string >> f p
-    where wrstr p "" = poke p (0 :: Word8)
+    bracket (mallocBytes sLength) (free) $ \p ->
+      wrstr (castPtr p) string >> f p sLength
+    where wrstr p "" = return ()
           wrstr p (x:xs) = poke p (fromIntegral (ord x) :: Word8) >> wrstr (p `plusPtr` 1) xs
+
+          sLength = length string
 
 readCStringN :: Ptr Char -> Int -> IO String
 readCStringN p n = go (castPtr p) n ""
@@ -27,7 +29,7 @@ readCStringN p n = go (castPtr p) n ""
                         if c == 0 then return a else go (p `plusPtr` 1) (n - 1) (a  ++ [chr (fromIntegral c)])
 
 hosDebugLog :: String -> IO ()
-hosDebugLog x = writeCString x $ \xp -> syscall 0 (ptrToWord xp) 0 0 0 0 >> return ()
+hosDebugLog x = writeCString x $ \xp len -> syscall 0 (ptrToWord xp) (fromIntegral len) 0 0 0 >> return ()
 
 hosFork :: IO Int
 hosFork = syscall 0x402 0 0 0 0 0 >>= return . fromIntegral
@@ -49,11 +51,11 @@ instance Storable ModuleInfo where
 
     peek p = do start <- peek (castPtr p :: Ptr Word32)
                 end <- peek (castPtr p `plusPtr` 4:: Ptr Word32)
-                name <- readCStringN (castPtr p `plusPtr` 8) 40
+                name <- readCStringN (castPtr p `plusPtr` 8) 120
                 return (ModuleInfo name start end)
 
 hosGetModuleInfo :: Word8 -> IO ModuleInfo
 hosGetModuleInfo i =
-    bracket malloc free $ \p ->
+    bracket (mallocBytes 500) free $ \p ->
         do x <- syscall 0xff01 (fromIntegral i) (ptrToWord p) 0 0 0
            x `seq` peek p

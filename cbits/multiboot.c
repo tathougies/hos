@@ -282,6 +282,9 @@ void bootstrap_kernel()
       cur_phys_addr += ARCH_PAGE_SIZE;
     }
   }
+
+  /* Now, allocate a new stack for us */
+  // switch_stacks(512KB)
 }
 
 #define ALIGN(addr, size) (addr & ~(size - 1))

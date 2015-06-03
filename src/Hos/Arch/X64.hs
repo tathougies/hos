@@ -60,6 +60,7 @@ x64 = Arch
     , archMapKernel = x64MapKernel
     , archMapPage = x64MapPage
     , archUnmapPage = x64UnmapPage
+    , archTestPage = x64TestPage
     , archCopyPhysPage = x64CopyPhysPage
 
     , archGetCurVirtMemTbl = x64GetCurVirtMemTbl
@@ -226,6 +227,22 @@ x64UnmapPage virt =
              pokeElemOff ptPtr ptI 0
              archInvalidatePage virt
 
+x64TestPage :: Word64 -> MemoryPermissions -> IO Bool
+x64TestPage vAddr reqPerms =
+    do pEntry <- x64GetPhysPageEntry vAddr
+       case pEntry .&. 0x1 of
+         0x1 -> let curPerms = x64PageEntryPermissions pEntry
+                in case (curPerms, reqPerms) of
+                     (UserSpace ReadWrite, _) -> return True
+                     (UserSpace ReadOnly, UserSpace ReadOnly) -> return True
+                     (UserSpace ReadOnly, Privileged ReadOnly) -> return True
+                     (UserSpace ReadOnly, UserSpace ReadWrite) -> return False
+                     (UserSpace ReadOnly, Privileged ReadWrite) -> return False
+                     (Privileged _, UserSpace _) -> return False
+                     (Privileged ReadOnly, Privileged ReadWrite) -> return False
+                     _ -> return True
+         _ -> return False
+
 x64CopyPhysPage :: Word64 -> Word64 -> IO ()
 x64CopyPhysPage src dest =
     withMapping x64 (Privileged ReadOnly) miscPage1 src $ \srcP ->
@@ -254,21 +271,15 @@ x64ReadyForUserspace =
        idtPtr <- x64NewIDT
        x64LoadIdt idtPtr
 
-       poke x64KernelSSELock 0
-
 foreign import ccall "arch.h &curUserSpaceState" x64TaskStateTmp :: Ptr ()
 foreign import ccall "arch.h &kernelState" x64KernelState :: Ptr ()
 foreign import ccall "arch.h x64SwitchToUserspace" x64SwitchToUserspaceAsm :: Ptr () -> Ptr () -> IO Int
-foreign import ccall "arch.h &taskSwitchedSinceLastSSESave" x64TaskSwitchedSinceLastSSESave :: Ptr Word8
 foreign import ccall "arch.h x64WriteCR3" x64WriteCR3 :: Word64 -> IO ()
 x64SwitchTasks :: Task X64Registers X64PageTable -> Task X64Registers X64PageTable -> IO (Task X64Registers X64PageTable)
 x64SwitchTasks oldTask newTask =
     do oldTask' <- x64PeekTaskState oldTask x64TaskStateTmp
        x64PokeTaskState newTask x64TaskStateTmp
        let X64PageTable newPml4 = taskVirtMemTbl newTask
-
-       -- Since we're switching tasks, we will need to check the SSE state before letting the new task use FP instructions
-       poke x64TaskSwitchedSinceLastSSESave 1
 
        x64WriteCR3 newPml4
        return oldTask'
@@ -307,6 +318,9 @@ x64ReturnToUserspace = poke ((castPtr x64TaskStateTmp) `plusPtr` 8)
 x64GetUserRIP :: IO Word64
 x64GetUserRIP = peek ((castPtr x64TaskStateTmp) `plusPtr` (15 * 8))
 
+x64GetRSP :: IO Word64
+x64GetRSP = peek ((castPtr x64KernelState) `plusPtr` (15 * 8))
+
 x64GetUserSyscall :: IO SysCall
 x64GetUserSyscall =
     do sysCallNumW <- peek ((castPtr x64TaskStateTmp :: Ptr Word64) `plusPtr` 8)
@@ -318,7 +332,7 @@ x64GetUserSyscall =
        sysCallArg5W <- peek ((castPtr x64TaskStateTmp :: Ptr Word64) `plusPtr` (8 * 8))
        sysCallInfoPtrW <- peek ((castPtr x64TaskStateTmp :: Ptr Word64) `plusPtr` 16)
        case sysCallNumW of
-         0 -> readCString (wordToPtr sysCallArg1W) >>= return . DebugLog
+         0 -> return (DebugLog (wordToPtr sysCallArg1W) (fromIntegral sysCallArg2W))
          1 -> return (CurrentAddressSpace (TaskId (fromIntegral sysCallArg1W)))
          2 -> do mapping <- peek (wordToPtr sysCallArg4W)
                  return (AddMapping (AddressSpaceRef (fromIntegral sysCallArg1W))
@@ -332,7 +346,7 @@ x64GetUserSyscall =
          0x403 -> return Yield
          0xff00 -> return ModuleCount
          0xff01 -> return (GetModuleInfo (fromIntegral sysCallArg1W) (wordToPtr sysCallArg2W))
-         _ -> return MalformedSyscall
+         _ -> return (MalformedSyscall (fromIntegral sysCallNumW))
 
 foreign import ccall "arch.h &x64TrapErrorCode" x64TrapErrorCode :: Ptr Word64
 foreign import ccall "arch.h x64ReadCR2" x64ReadCR2 :: IO Word64
@@ -367,58 +381,5 @@ x64MapFault 20 = return VirtualMachineException
 x64MapFault 30 = return $ ArchException X64SecurityException
 x64MapFault _ = return UnknownException
 
--- TODO get rid of globals...
-x64LastSSETask :: IORef TaskId
-x64LastSSETask = unsafePerformIO (newIORef (TaskId 0))
-
-foreign import ccall "arch.h &kernelSavedSSEState" x64KernelSavedSSEState :: Ptr Word8
-foreign import ccall "arch.h &restoreSSEOnReturn" x64RestoreSSEOnReturn :: Ptr Word8
-foreign import ccall "arch.h &userSSESaveArea" x64UserSSESaveArea :: Ptr Word64
-foreign import ccall "arch.h &kernelSSELock" x64KernelSSELock :: Ptr Word8
 x64HandleException :: X64Exception -> X64HosState -> IO (Either String X64HosState)
-x64HandleException X64DeviceNotAvailable st =
-    do -- First, check if we need to store the old state, or if the last task has been killed
-       x64DebugLog "Locking SSE..."
-       poke x64KernelSSELock 1 -- This will trigger a panic if the kernel tries to do anything with SSE after this function runs. This is inevitable given the current broken handling of SSE in Hos. This lock lets us know if the error was caused by this bad handling or another error
-       lastSSETaskId <- readIORef x64LastSSETask
-       kernelSavedSSEState <- peek x64KernelSavedSSEState
-       let currentTaskId = hscCurrentTask (hosSchedule st)
-           Just currentTask = M.lookup currentTaskId (hosTasks st)
-       st' <- case M.lookup lastSSETaskId (hosTasks st) of
-                Nothing -> do -- the last task was killed, we should poke the current SSE state and set the restoresseonreturn flag
-                              x64PokeSSEState x64UserSSESaveArea (taskSavedRegisters currentTask)
-                              poke x64RestoreSSEOnReturn 1
-                              return st
-                Just lastTask
-                    -- if the last task is the current task and the kernel did not save sse state, there's no need to do anything
-                    -- we won't even need to restore anything
-                    | lastSSETaskId == currentTaskId && kernelSavedSSEState == 0 ->
-                        do x64DebugLog "kernel did not steal SSe from current task... doing nothing"
-                           return st
-
-                    -- if the last task is the current task, but the kernel did save the state, all we have to do is restore on return
-                    | lastSSETaskId == currentTaskId && kernelSavedSSEState /= 0 ->
-                        do x64DebugLog "kernel stole SSE from current task... simply restoring..."
-                           poke x64RestoreSSEOnReturn 1
-                           return st
-
-                    -- otherwise, we need to get the last userspace SSE state and store it in the last task.
-                    -- then we need to poke our state to the save area, and set the restore on return flag
-                    | otherwise -> do x64DebugLog ("Going to save and restore... kerneldSavedSSEState = " ++ show kernelSavedSSEState)
-                                      lastTaskRegisters' <- case kernelSavedSSEState of
-                                                              0 -> x64SSEStateFromRegisters (taskSavedRegisters lastTask)
-                                                              _ -> x64PeekSSEState x64UserSSESaveArea (taskSavedRegisters lastTask)
-                                      let lastTask' = lastTask { taskSavedRegisters = lastTaskRegisters' }
-                                          tasks' = M.insert lastSSETaskId lastTask' (hosTasks st)
-                                          st' = st { hosTasks = tasks' }
-
-                                          Just currentTask' = M.lookup currentTaskId tasks'
-                                      x64PokeSSEState x64UserSSESaveArea (taskSavedRegisters currentTask')
-                                      poke x64RestoreSSEOnReturn 1
-                                      x64DebugLog ("Restored old task state, and saved current state in old task (" ++ show lastSSETaskId ++ ")")
-                                      return st'
-       poke x64TaskSwitchedSinceLastSSESave 0
-       poke x64KernelSavedSSEState 0
-       writeIORef x64LastSSETask (hscCurrentTask (hosSchedule st))
-       return (Right st')
 x64HandleException x _ = return (Left ("Unhandled Exception " ++ show x))

@@ -185,13 +185,16 @@ x64PokeTaskState (Task { taskReasonLeft = reasonLeft
                        , taskSavedRegisters = regs }) p =
   do poke (castPtr p) (asmReasonLeft reasonLeft)
      poke (castPtr (p `plusPtr` 8) :: Ptr X64GPRegisters) (x64GPRegisters regs)
+     x64PokeSSEState (castPtr p `plusPtr` 0x98) regs
 
 -- TODO Save page tables as well
 x64PeekTaskState :: Task X64Registers vMemTbl -> Ptr a -> IO (Task X64Registers vMemTbl)
 x64PeekTaskState t p =
     do reasonLeftI <- peek (castPtr p :: Ptr Word64)
-       regs <- peek (castPtr (p `plusPtr` 8) :: Ptr X64GPRegisters)
-       return (t { taskReasonLeft = reasonLeftFromAsm reasonLeftI, taskSavedRegisters = (taskSavedRegisters t) { x64GPRegisters = regs } })
+       gpRegs <- peek (castPtr (p `plusPtr` 8) :: Ptr X64GPRegisters)
+       let regs' = (taskSavedRegisters t) { x64GPRegisters = gpRegs }
+       regs'' <- x64PeekSSEState (castPtr p `plusPtr` 0x98) regs'
+       return (t { taskReasonLeft = reasonLeftFromAsm reasonLeftI, taskSavedRegisters = regs'' })
 
 instance Storable WordSSE where
     sizeOf _ = 16
@@ -360,13 +363,6 @@ x64PokeSSEState p (X64Registers { x64FPState = fpState, x64MMXRegisters = mmx, x
        poke (castPtr p `plusPtr` 0x180) xmmE
        poke (castPtr p `plusPtr` 0x190) xmmF
        return ()
-
-
-foreign import ccall "arch.h &userSSETmpSaveArea" x64UserSSETmpSaveArea :: Ptr Word64
-foreign import ccall "arch.h fxSave" fxSave :: Ptr a -> IO ()
-x64SSEStateFromRegisters :: X64Registers -> IO X64Registers
-x64SSEStateFromRegisters regs = do fxSave x64UserSSETmpSaveArea
-                                   x64PeekSSEState x64UserSSETmpSaveArea regs
 
 x64PeekFPState :: Ptr Word64 -> IO X64FPState
 x64PeekFPState p =

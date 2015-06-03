@@ -4,7 +4,7 @@ include ../../build.opts
 
 all: ../../build/progs/$(PROG_NAME).elf
 
-../../build/progs/$(PROG_NAME).elf: $(PROG_HS_FILES) ../../build/libcbits-user.a ../../build/librts.a
+../../build/progs/$(PROG_NAME).elf: $(PROG_HS_FILES) ../../build/libcbits-user.a ../../build/librts.a ../hos/hos-0.0.1.hl
 	mkdir -p ../../build/progs/
 	$(JHC) -C $(PROG_HS_FILES) -o ../../build/progs/$(PROG_NAME).c -fcpp -I../cbits -I../../cbits -I../../rts -fffi -phos -L../hos
 	$(CROSSCOMPILE_CLANG) ../../build/progs/$(PROG_NAME).c -S -I ../cbits -I ../../cbits -I ../../rts $(CFLAGS_USER) $(PROG_CFLAGS) -o ../../build/progs/$(PROG_NAME).S

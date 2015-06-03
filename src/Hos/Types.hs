@@ -64,6 +64,7 @@ data Arch regs vMemTbl archE =
     , archNewVirtMemTbl :: IO vMemTbl
     , archMapKernel :: vMemTbl -> IO ()
     , archMapPage :: Word64 -> Word64 -> MemoryPermissions -> IO ()
+    , archTestPage :: Word64 -> MemoryPermissions -> IO Bool
     , archUnmapPage :: Word64 -> IO ()
     , archCopyPhysPage :: Word64 -> Word64 -> IO ()
 
@@ -130,7 +131,7 @@ data Mapping = AllocateOnDemand MemoryPermissions
              | CopyOnWrite MemoryPermissions Word64
                deriving (Show, Eq, Ord)
 
-data SysCall = DebugLog String
+data SysCall = DebugLog (Ptr Word8) Int
 
              | CreateAddressSpace
              | CurrentAddressSpace TaskId
@@ -158,7 +159,7 @@ data SysCall = DebugLog String
              | ModuleCount
              | GetModuleInfo Word8 (Ptr ())
 
-             | MalformedSyscall
+             | MalformedSyscall Word16
                deriving Show
 
 data Task archRegisters archVirtMemTbl =

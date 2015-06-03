@@ -30,6 +30,31 @@ void hos_debug_log(const char *ptr)
   syscall(HOS_DEBUG_LOG, (hos_word_t) ptr, 0, 0, 0, 0);
 }
 
+#define NIBBLE(x, i) hexChars[((x) >> i) & 0xf]
+void hos_debug_log_hex(uint64_t i)
+{
+  static char hexChars[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+  static char buf[17] = {0};
+  buf[0] = NIBBLE(i, 60);
+  buf[1] = NIBBLE(i, 56);
+  buf[2] = NIBBLE(i, 52);
+  buf[3] = NIBBLE(i, 48);
+  buf[4] = NIBBLE(i, 44);
+  buf[5] = NIBBLE(i, 40);
+  buf[6] = NIBBLE(i, 36);
+  buf[7] = NIBBLE(i, 32);
+  buf[8] = NIBBLE(i, 28);
+  buf[9] = NIBBLE(i, 24);
+  buf[10] = NIBBLE(i, 20);
+  buf[11] = NIBBLE(i, 16);
+  buf[12] = NIBBLE(i, 12);
+  buf[13] = NIBBLE(i, 8);
+  buf[14] = NIBBLE(i, 4);
+  buf[15] = NIBBLE(i, 0);
+  buf[16] = '\0';
+  hos_debug_log(buf);
+}
+
 void jhc_error(char *ptr)
 {
   hos_debug_log(ptr);

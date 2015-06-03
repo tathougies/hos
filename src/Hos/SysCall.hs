@@ -2,12 +2,21 @@ module Hos.SysCall where
 
 import Hos.Types
 import Hos.Privileges ()
+import Hos.Task
 import Hos.CBits
 
 import Control.Applicative
+import Control.Monad
 
 import Data.Functor
+import Data.Char
+import Data.Word
 import qualified Data.Map.Base as M
+
+import Foreign.Ptr
+import Foreign.Storable
+
+import Numeric
 
 newtype SysCallM r v e a = SysCallM { runSysCallM :: Arch r v e -> HosState r v e -> IO (SysCallResult (a, HosState r v e)) }
 
@@ -138,3 +147,26 @@ switchToNextTask = do st <- getHosState
                                         curTask' <- liftIO $ archSwitchTasks arch curTask newTask
                                         x <- setHosState st'
                                         x `seq` return curTask'
+
+ensurePtr :: Ptr a -> ReadWrite -> SysCallM r v e ()
+ensurePtr p rw = do a <- getArch
+                    res <- liftIO (archTestPage a (ptrToWord p) (Privileged rw))
+                    case res of
+                      False -> do curTask <- getCurrentTask
+                                  let faultCause = case rw of
+                                                     ReadOnly -> FaultOnRead
+                                                     ReadWrite -> FaultOnWrite
+                                  res <- liftIO (handleFaultAt a faultCause (ptrToWord p) curTask)
+                                  case res of
+                                    Left err -> do x <- scDebugLog "Bad ptr"
+                                                   x `seq` liftIO cHalt
+                                    Right curTask' -> setCurrentTask curTask'
+                      _ -> return ()
+
+readCString :: Ptr Word8 -> Int -> IO String
+readCString p n = go p n ""
+    where go _ 0 a = return a
+          go p !n a = do c <- peek p
+                         let a' = a ++ (c' `seq` c')
+                             c' = [chr (fromIntegral c)]
+                         go (p `plusPtr` 1) (n - 1) (a' `seq` a')

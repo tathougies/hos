@@ -4,8 +4,10 @@ xmmNextState:	.quad 0
 xmmPrevState:	.quad 0
 
 .section .bss
+	.align 16
+	.skip 0x8 # Ensure that the reason is 8-byte aligned, but not 16-byte aligned, which means the sse save area will be 16 byte aligned...
 curUserSpaceState:
-	.skip 0x298 # 18 registers + 512-byte fxsave area + 1 quad word reason
+	.skip 0x298 # 1quad word reason + 18 registers + 512-byte fxsave area
 		  # indicator
 kernelState:
 	.skip 0x290 # 18 registers  + 512-byte fxsave area
@@ -55,6 +57,7 @@ serviceISR:
 	mov %ax, %es
 	mov %ax, %fs
 	mov %ax, %gs
+	mov %ax, %ss
 
 	# We set the interrupts to use the new fault stack so that we can
 	# detect if the error was in the kernel or not
@@ -134,11 +137,10 @@ doneWithStack:
 	movq %r14, (R14_I * 8)(%rbx)
 	movq %r15, (R15_I * 8)(%rbx)
 
-	# Since we came from a syscall, rcx contains the rip to return to, and
-	# r11 the old rflags
 	movq %rbp, (RBP_I * 8)(%rbx)
 
-	# TODO save xmm state
+	# Now, save SSE state
+	fxsave SSE_OFFSET(%rbx)
 
 	# Pop the interrupt number from rax and call restoreKernelState
 	popq %rax
@@ -149,11 +151,7 @@ doneWithStack:
 	jmp restoreKernelState
 
 inKernelFault:
-	# Test if the RTS can handle this fault
-	# Exception 7 is a device not available exception, which means we
-	# switched tasks and are lazily loading the state
-	cmpq $0x7, %rbx
-	je inKernelNMException
+	# Test if the RTS can handle this fault. Nothing here yet...
 continueInKernelFault:
 	popq %rcx
 	popq %rbx
@@ -193,76 +191,6 @@ continueWithPanic:
 	movq 0x10(%rsp), %rcx # EFLAGS
 	callq report_kernel_panic
 
-# NM exception handling
-#
-# When we switch the current state for the kernel state, we save the userspace
-# state. We need to keep track of this by setting the kernelSavedSSEState flag.
-# This lets the runtime know that the last userspace process's state is in the
-# save area.
-#
-# The flag will be cleared the next time some userspace program tries to use floating
-# point instructions
-#
-# The task switched flag is set on entry to userspace if either kernelSavedSSEState
-# or taskSwitchedSinceLAstSSESave is 1
-inKernelNMException:
-	.set TASK_SWITCHED, 0x8
-	.set INVALID_TASK, 0xffffffff
-
-	movabsq $kernelSSELock, %rax
-	movb (%rax), %al
-	test %al, %al
-	jnz callNMPanic
-
-	# We're going to save the userspace registers
-	movabsq $kernelSavedSSEState, %rax
-	movb $0x1, (%rax)
-
-	# Clear the task switched bit so other kernel sse instructions do not cause NM exceptions
-	mov %cr0, %rax
-	andq $(~TASK_SWITCHED), %rax
-	mov %rax, %cr0
-
-	# Save the user state
-	movabsq $userSSESaveArea, %rax
-	fxsave (%rax)
-
-	pushq %rdi
-	movabsq $write_serial, %rax
-	mov $'s', %rdi
-	callq *%rax
-	mov $'s', %rdi
-	callq *%rax
-	mov $'e', %rdi
-	callq *%rax
-	mov $' ', %rdi
-	callq *%rax
-	mov $'s', %rdi
-	callq *%rax
-	mov $'a', %rdi
-	callq *%rax
-	mov $'v', %rdi
-	callq *%rax
-	mov $'e', %rdi
-	callq *%rax
-	mov $'e', %rdi
-	callq *%rax
-	mov $'0', %rdi
-	movabsq $kernelSSELock, %rbx
-	addq (%rbx), %rdi
-	callq *%rax
-	mov $'\n', %rdi
-	callq *%rax
-	popq %rdi
-
-	# Now simply return to kernel land, remembering to skip the interrupt
-	# number on the stack
-	popq %rcx
-	popq %rbx
-	popq %rax
-	lea 0x8(%rsp), %rsp
-	iretq
-
 callNMPanic:
 	movabsq $report_sse_panic, %rax
 	callq *%rax
@@ -297,6 +225,7 @@ x64SwitchToUserspace:
 	.set RSP_I, 15
 	.set RBP_I, 16
 	.set RFLAGS_I, 17
+	.set SSE_OFFSET, 0x90
 
 	# Assumptions: Called when the kernel wants to restore the state of a
 	# userspace task and give control back to userspace.
@@ -325,10 +254,6 @@ x64SwitchToUserspace:
 	# We skip rflags, since the caller expects this to be convoluted after a
 	# function call
 
-	# Now save xmm state
-	# leaq (XMM_I * 8)(%rsi), %rax
-	# fxsave (%rax)
-
 	# We're going to use rax to store the means by which we will exit
 	# userspace
 	mov (%rdi), %rax
@@ -351,43 +276,8 @@ x64SwitchToUserspace:
 	movq (RBP_I * 8)(%rdi), %rbp
 	# skip rflags
 
-	# Now, set or clear the task switched bit as necessary.
-	# We clear the bit, unless either kernelSavedSSEState, or taskSwitchedSinceLastSSESave is true
-	pushq %rax
-	movq %cr0, %rax
-	andq $(~TASK_SWITCHED), %rax # Clear the bit for now, but we may set it again depending on the status of kernelSavedSSEState or taskSwitchedSinceLastSSESave
-	movq %rax, %cr0
-
-	# We may have to restore the sse state, depending on what Haskell says
-	# if the restoreSSEOnReturn flag is non-zero, then we restore the state, and
-	# set the flag to 0
-	movabsq $restoreSSEOnReturn, %rbx
-	movb (%rbx), %bl
-	test %bl, %bl
-	jz doneRestoreSSEState
-restoreSSEState:
-	movabsq $userSSESaveArea, %rbx
-	fxrstor (%rbx)
-doneRestoreSSEState:
-	# Clear the restoreSSEOnReturn flag
-	movabsq $restoreSSEOnReturn, %rbx
-	movq $0, (%rbx)
-
-	movabsq $kernelSavedSSEState, %rbx
-	movb (%rbx), %bl
-	test %bl, %bl
-	jnz setTaskSwitchedOutOfKernel
-
-	movabsq $taskSwitchedSinceLastSSESave, %rbx
-	movb (%rbx), %bl
-	test %bl, %bl
-	jnz setTaskSwitchedOutOfKernel
-	jmp doneWithFPStateOutOfKernel
-setTaskSwitchedOutOfKernel:
-	orq $TASK_SWITCHED, %rax
-doneWithFPStateOutOfKernel:
-	movq %rax, %cr0
-	popq %rax
+	# Now, restore the sse state...
+	fxrstor SSE_OFFSET(%rdi)
 
 	# Now restore segment selectors to the userspace ones
 	mov $0x1b, %rbx
@@ -395,9 +285,6 @@ doneWithFPStateOutOfKernel:
 	mov %bx, %es
 	mov %bx, %fs
 	mov %bx, %gs
-
-	movabsq $kernelSSELock, %rbx
-	movb $0, (%rbx) # Make sure the sse lock is turned off after we leave kernel space.
 
 	movq (RBX_I * 8)(%rdi), %rbx
 
@@ -505,6 +392,9 @@ serviceSyscall:
 	movq %rcx, (RIP_I * 8)(%r10)
 	movq %r11, (RFLAGS_I * 8)(%r10)
 
+	# Now save the SSE state
+	fxsave SSE_OFFSET(%r10)
+
 	# We set the interrupts to use the new fault stack so that we can
 	# detect if the error was in the kernel or not
 	movabsq $kernelFaultStack_top, %r11
@@ -520,6 +410,12 @@ serviceSyscall:
 	# register to determine what transferred control to kernel land. The
 	# return value 256 indicates a syscall from userspace. We set rax here,
 	# and then fall through to restoreKernelState, which does not set rax
+	mov $0x10, %ax
+	mov %ax, %ds
+	mov %ax, %es
+	mov %ax, %fs
+	mov %ax, %gs
+
 	mov $0x100, %rax
 restoreKernelState:
 	movabsq $kernelState, %rdi
@@ -542,38 +438,8 @@ restoreKernelState:
 	# rflags doesn't matter, since we'll be simulating a return from a
 	# function
 
-	call checkFPStateIntoKernel
-
 	# Now we're on the kernel stack, so we can issue a ret to return to the
 	# kernel, returning whatever we got
-	ret
-
-checkFPStateIntoKernel:
-	# Check if the kernelSavedSSEState flag is set.
-	# If it is, then we can clear task switched, otherwise, we must set it.
-	pushq %rax
-	movabsq $kernelSavedSSEState, %rax
-	movb (%rax), %al
-	test %al, %al
-	mov %cr0, %rax
-
-	jz setTaskSwitchedIntoKernel
-
-	# clear the task switched bit
-	andq $(~TASK_SWITCHED), %rax
-	jmp doneWithFPStateIntoKernel
-
-setTaskSwitchedIntoKernel:
-	orq $TASK_SWITCHED, %rax
-
-doneWithFPStateIntoKernel:
-	mov %rax, %cr0
-	popq %rax
-	ret
-
-.global fxSave
-fxSave:
-	fxsave (%rdi)
 	ret
 
 .global setupSysCalls
@@ -757,31 +623,7 @@ trap31:
 	pushq $31
 	jmp serviceISR
 
-	.section .bss
-	.align 16
-userSSESaveArea:
-	.global userSSESaveArea
-	.skip 0x200
-
-userSSETmpSaveArea:
-	.global userSSETmpSaveArea
-	.skip 0x200
-
-kernelSavedSSEState:
-	.section .data
-	.global kernelSavedSSEState
-	.byte 0
-
-taskSwitchedSinceLastSSESave:
-	.global taskSwitchedSinceLastSSESave
-	.byte 0
-restoreSSEOnReturn:
-	.global restoreSSEOnReturn
-	.byte 0
 	.align 8
 x64TrapErrorCode:
 	.global x64TrapErrorCode
 	.quad 0
-kernelSSELock:
-	.global kernelSSELock
-	.byte 0

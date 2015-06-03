@@ -94,7 +94,7 @@ kernelize a st =
     do rsn <- archSwitchToUserspace a
        let taskId = hscCurrentTask (hosSchedule st)
        rip <- x64GetUserRIP
-       archDebugLog a ("Back(Task" ++ show taskId ++ "): " ++ show rsn ++ " at " ++ showHex rip "")
+--       archDebugLog a ("Back(Task" ++ show taskId ++ "): " ++ show rsn ++ " at " ++ showHex rip "" ++ " stack")
        case rsn of
          TrapInterrupt (VirtualMemoryFault vmCause vAddr) ->
              do t <- currentTask st
@@ -113,8 +113,8 @@ kernelize a st =
                 case res of
                   Right st' -> kernelize a st'
                   Left err -> archDebugLog a ("Architectural panic: " ++ show err)
-         SysCallInterrupt (DebugLog s) ->
-             runSysCall (debugLog s) a st >>= kernelize a
+         SysCallInterrupt (DebugLog s n) ->
+             runSysCall (debugLog s n) a st >>= kernelize a
          SysCallInterrupt (CurrentAddressSpace taskId) ->
              do runSysCall (currentAddressSpace taskId) a st >>= kernelize a
          SysCallInterrupt (AddMapping addrSpaceRef range mapping) ->
@@ -150,8 +150,14 @@ runSysCall sc a st = do res <- runSysCallM sc a st
                           Success (x, st') -> archReturnToUserspace a (fromSysCallReturnable x) >>
                                               return st'
 
-debugLog :: String -> SysCallM r v e ()
-debugLog s = scDebugLog ("Userspace says: " ++ show s)
+debugLog :: Ptr Word8 -> Int -> SysCallM r v e ()
+debugLog p sLength =
+    do let go 0 = ensurePtr p ReadOnly
+           go !n = do x <- ensurePtr (p `plusPtr` n) ReadOnly
+                      x `seq` go (n - 1)
+       x <- go (sLength - 1) -- Ensure the entire string is in memory
+       s <- liftIO (readCString p sLength)
+       x `seq` scDebugLog ("[User] " ++ s)
 
 currentAddressSpace :: TaskId -> SysCallM r v e ()
 currentAddressSpace taskId =
@@ -191,9 +197,9 @@ killTask taskId = ensuringPrivileges (canKillP taskId) $
 yieldSc :: SysCallM r v e ()
 yieldSc = do curPrio <- getCurrentTaskPriority
              curTaskId <- getCurrentTaskId
+             x1 <- scheduleTask curPrio curTaskId -- make sure we run next time!
              curTask' <- switchToNextTask
-             x1 <- setTask curTaskId curTask'
-             x1 `seq` scheduleTask curPrio curTaskId -- make sure we run next time!
+             x1 `seq` setTask curTaskId curTask'
 
 forkSc :: SysCallM r v e TaskId
 forkSc = do curTask <- getCurrentTask

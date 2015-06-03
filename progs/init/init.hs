@@ -5,11 +5,12 @@ import Hos.User.SysCall
 import Control.Monad
 
 main :: IO ()
-main = do hosDebugLog "Init starting..."
+main = do hosDebugLog "Going to try (++)"
+          doChild
           childId <- hosFork
           case childId of
-            0 -> doChild
-            _ -> doParent
+            0 -> doParent
+            _ -> doChild
 
 doParent :: IO ()
 doParent = do hosDebugLog "Hello from the parent!"
@@ -22,9 +23,11 @@ doParent = do hosDebugLog "Hello from the parent!"
 
 doChild :: IO ()
 doChild = do -- Now, we want to launch all the modules that were given to us on the command line
+             hosDebugLog "hello from child"
              modCount <- hosModuleCount
-             modsInfo <- mapM hosGetModuleInfo [0..(modCount - 1)]
-             forM_ modsInfo $ \modInfo -> hosDebugLog ("Found module " ++ show modInfo)
+             modsInfo <- mapM hosGetModuleInfo [1..(modCount - 1)]
+             hosDebugLog "Init is going to start modules..."
+             forM_ modsInfo $ \modInfo -> hosDebugLog ("Found module Module Info info info) -- " ++ show modInfo)
 -- import Hos.User.SysCall
 -- import Hos.User.Modulem
 

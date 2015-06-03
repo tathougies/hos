@@ -54,9 +54,6 @@ inline void x64WriteCR3(uint64_t cr3) {
 void setupSysCalls();
 extern int curUserSpaceState;
 extern int kernelState;
-extern uint8_t kernelSavedSSEState, taskSwitchedSinceLastSSESave, restoreSSEOnReturn;
-extern volatile uint8_t kernelSSELock;
-extern uint64_t userSSESaveArea, userSSETmpSaveArea;
 extern uint64_t x64TrapErrorCode;
 int x64SwitchToUserspace(void *newState, void *oldState);
 

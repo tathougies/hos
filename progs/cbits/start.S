@@ -8,7 +8,6 @@ _start:
 	.set HOS_SWITCH_TO_ADDRESS_SPACE, 5
 	.set HOS_KILL_PROCESS, 0x400
 	.set HOS_CURRENT_PROCESS, 0x401
-
 	movq $HOS_CURRENT_ADDRESS_SPACE, %rax
 	xorq %rdi, %rdi # We want the current address space for task id 0
 	syscall
@@ -38,6 +37,40 @@ _start:
 	mov $5, %rsi
 	movabsq $0xffffff0000000000, %rsp
 
+	movabsq $xmmWord, %rax
+	movups (%rax), %xmm0
+	movups (%rax), %xmm1
+	movups (%rax), %xmm2
+	movups (%rax), %xmm3
+	movups (%rax), %xmm4
+	movups (%rax), %xmm5
+	movups (%rax), %xmm6
+	movups (%rax), %xmm7
+	movups (%rax), %xmm8
+	movups (%rax), %xmm9
+	movups (%rax), %xmm10
+	movups (%rax), %xmm11
+	movups (%rax), %xmm12
+	movups (%rax), %xmm13
+	movups (%rax), %xmm14
+	movups (%rax), %xmm15
+
+	movabsq $0xf0f0f0f0f0f0f001, %rax
+	movabsq $0xf2f0f0f2f2f0f022, %rbx
+	movabsq $0x3ff0f4f2f1f1f023, %rcx
+	movabsq $0x3f000003f1f4f024, %rdx
+	movabsq $0x3f000003f1f4f025, %rsi
+	movabsq $0xfffffffffffffff5, %rdi
+	movabsq $0xffffffff00000006, %rbp
+	movabsq $0x0707070707070707, %r8
+	movabsq $0x808080808080808a, %r9
+	movabsq $0xdeadbeefdeadbeeb, %r10
+	movabsq $0x111111111111111c, %r11
+	movabsq $0xdd00dd00dd00dddd, %r12
+	movabsq $0xeefbeefbeefbeefe, %r13
+	movabsq $0xffffff0000000fff, %r14
+	movabsq $0x1f1f1f1f1f1f1f11, %r15
+
 	call hos_init_clear_bss
 	call jhc_alloc_init
 	call jhc_hs_init
@@ -49,6 +82,9 @@ _start:
 	mov %rax, %rdi
 	movq $HOS_KILL_PROCESS, %rax
 	syscall
+
+xmmWord:	.quad 0x0202020201010101
+	.quad 0x0303030304040404
 
 mappingInfo:	.skip 0x2
 

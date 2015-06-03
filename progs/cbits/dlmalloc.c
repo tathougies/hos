@@ -4497,7 +4497,7 @@ static void* tmalloc_large(mstate m, size_t nb) {
   }
   return 0;
 }
-
+void hos_debug_log_hex(uintptr_t i);
 /* allocate a small request from the best fitting chunk in a treebin */
 static void* tmalloc_small(mstate m, size_t nb) {
   tchunkptr t, v;
@@ -4561,7 +4561,6 @@ void* dlmalloc(size_t bytes) {
 
      The ugly goto's here ensure that postaction occurs along all paths.
   */
-
 #if USE_LOCKS
   ensure_initialization(); /* initialize in sys_alloc if not using locks */
 #endif

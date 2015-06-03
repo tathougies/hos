@@ -98,7 +98,6 @@ handleFaultAt arch faultCause vAddr task =
                  newPage <- cPageAlignedPhysAlloc (fromIntegral (archPageSize arch))
                  let task' = taskWithMapping (alignToPage arch vAddr) (alignToPage arch (vAddr + fromIntegral (archPageSize arch))) (Mapped perms newPage) task
                  archCopyPhysPage arch pageToCopyBase newPage
-                 archDebugLog arch ("Coying " ++ showHex pageToCopyBase ("to " ++ showHex newPage (" at vAddr "  ++ showHex (alignToPage arch vAddr) "")))
                  archMapPage arch (alignToPage arch vAddr) newPage perms
                  return (Right task')
             _ ->

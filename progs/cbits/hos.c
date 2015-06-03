@@ -29,7 +29,7 @@ void* sbrk(ptrdiff_t space_to_add)
   static void *heap_end = (void *) HEAP_START;
   ptrdiff_t aligned_space_to_add = (space_to_add + EXEC_PAGESIZE - 1) & ~(EXEC_PAGESIZE - 1);
 
-  if ( space_to_add > 0 ) {
+  if ( aligned_space_to_add > 0 ) {
     task_id_t tId = hos_current_task();
     addr_space_t aRef = hos_current_address_space(tId);
     mem_mapping_t mapping = {MAP_ALLOCATE_ON_DEMAND, PERMS_USERSPACE_RW, 0};
@@ -38,7 +38,7 @@ void* sbrk(ptrdiff_t space_to_add)
     hos_close_address_space(aRef);
     heap_end += aligned_space_to_add;
   }
-  return HEAP_START;
+  return (void *) (((uintptr_t) heap_end) - aligned_space_to_add);
 }
 
 int fprintf(FILE *f, const char *fmt, ...)

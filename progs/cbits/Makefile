@@ -11,9 +11,9 @@ all: ../../build/libcbits-user.a
 ../../build/libcbits-user.a: $(CBITS_OBJECTS)
 	$(CROSSCOMPILE_AR) rcs ../../build/libcbits-user.a $(CBITS_OBJECTS)
 
-../../build/cbits-user/%.S: %.c
+../../build/cbits-user/%.o: %.c
 	mkdir -p ../../build/cbits-user
-	$(CROSSCOMPILE_CLANG) $< -S -I . -I ../../cbits -I ../../rts $(CFLAGS_USER) -o $@ -DCLANG=1
+	$(CROSSCOMPILE_CLANG) $< -c -I . -I ../../cbits -I ../../rts $(CFLAGS_USER) -o $@ -DCLANG=1 -g3
 
 ../../build/cbits-user/%.o: ../../build/cbits-user/%.S
 	mkdir -p ../../build/cbits-user
