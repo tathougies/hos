@@ -57,6 +57,7 @@ x64 = Arch
     , archUnmapInitTask = x64UnmapInitTask
 
     , archNewVirtMemTbl = x64NewVirtMemTbl
+    , archReleaseVirtMemTbl = x64ReleaseVirtMemTbl
     , archMapKernel = x64MapKernel
     , archMapPage = x64MapPage
     , archUnmapPage = x64UnmapPage
@@ -72,6 +73,7 @@ x64 = Arch
     , archSwitchToUserspace = x64SwitchToUserspace
     , archReturnToUserspace = x64ReturnToUserspace
     , archUserPanic = x64UserPanic
+    , archEnableIO = x64EnableIO
 
     , archBootModuleCount = peek x64ModuleCount >>= return . fromIntegral
     , archGetBootModule = x64GetBootModule
@@ -80,6 +82,7 @@ x64 = Arch
 
 instance Registers X64Registers where
     registersForTask = x64TaskRegisters
+    registersWithIP (InstructionPtr ip) regs = regs { x64GPRegisters = (x64GPRegisters regs) { x64GpRip = ip } }
 
 x64KernelPDPTEntry :: Int
 x64KernelPDPTEntry = 0x1fe
@@ -115,6 +118,11 @@ x64NewVirtMemTbl = do
     do memset (mapping :: Ptr Word64) 0 (fromIntegral (archPageSize x64))
        pokeElemOff mapping 511 (newPageTbl .|. 3)
   return (X64PageTable newPageTbl)
+
+x64ReleaseVirtMemTbl :: AddressSpace -> X64PageTable -> IO ()
+x64ReleaseVirtMemTbl aSpace pgTbl =
+    -- TODO
+    return ()
 
 x64MapKernel :: X64PageTable -> IO ()
 x64MapKernel (X64PageTable pgTbl) =
@@ -260,7 +268,6 @@ x64ReadyForUserspace :: IO ()
 x64ReadyForUserspace =
     -- Call the assembler code to enable the syscall/sysret function
     do x64SetupSysCalls
-       x64DebugLog ("Our kernel stack top is " ++ showHex (ptrToWord x64TempKernelStackTop) "")
        -- Next set RSP0 of our task segment to use our temporary stack
        poke (x64TssArea `plusPtr` 4) (ptrToWord x64TempKernelStackTop)
 
@@ -315,6 +322,12 @@ x64SwitchToUserspace = do -- We're going to be returning to some location in use
 x64ReturnToUserspace :: Word64 -> IO ()
 x64ReturnToUserspace = poke ((castPtr x64TaskStateTmp) `plusPtr` 8)
 
+x64EnableIO :: IO ()
+x64EnableIO = do rflags <- peek ((castPtr x64TaskStateTmp) `plusPtr` (18 * 8))
+                 let rflags' :: Word64
+                     rflags' = rflags .|. (3 `shiftL` 12)
+                 poke ((castPtr x64TaskStateTmp) `plusPtr` (18 * 8)) rflags'
+
 x64GetUserRIP :: IO Word64
 x64GetUserRIP = peek ((castPtr x64TaskStateTmp) `plusPtr` (15 * 8))
 
@@ -340,6 +353,11 @@ x64GetUserSyscall =
                                     mapping)
          4 -> return (CloseAddressSpace (AddressSpaceRef (fromIntegral sysCallArg1W)))
          5 -> return (SwitchToAddressSpace (TaskId (fromIntegral sysCallArg1W)) (AddressSpaceRef (fromIntegral sysCallArg2W)))
+         6 -> return EmptyAddressSpace
+         7 -> return (EnterAddressSpace (AddressSpaceRef (fromIntegral sysCallArg1W)) sysCallArg2W)
+
+         0x300 -> return RequestIO
+
          0x400 -> return (KillTask (TaskId (fromIntegral sysCallArg1W)))
          0x401 -> return CurrentTask
          0x402 -> return Fork

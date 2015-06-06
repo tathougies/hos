@@ -53,4 +53,25 @@ inline uintptr_t ptr_to_word(void *i)
   return (uintptr_t) i;
 }
 
+inline double frexp(double x, int *exp)
+{
+  return __builtin_frexp(x, exp);
+};
+inline float frexpf(float x, int *exp)
+{
+  return __builtin_frexpf(x, exp);
+};
+inline double ldexp(double x, int exp)
+{
+  return __builtin_ldexp(x, exp);
+};
+inline double ceil(double x)
+{
+  return __builtin_ceil(x);
+};
+inline double log(double x)
+{
+  return __builtin_log(x);
+}
+
 #endif

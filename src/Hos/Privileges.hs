@@ -12,7 +12,8 @@ initPrivileges = Privileges
               , canReplaceAddressSpaces = S.singleton (TaskId 0)
               , canKill = S.singleton (TaskId 0)
               , canGrantPrivileges = True
-              , canRevokePrivileges = True }
+              , canRevokePrivileges = True
+              , canRequestIO = True}
 
 noPrivileges :: Privileges
 noPrivileges = Privileges
@@ -22,7 +23,19 @@ noPrivileges = Privileges
              , canReplaceAddressSpaces = S.empty
              , canKill = S.empty
              , canGrantPrivileges = False
-             , canRevokePrivileges = False }
+             , canRevokePrivileges = False
+             , canRequestIO = False }
+
+forkPrivileges :: Privileges -> TaskId -> TaskId -> (Privileges, Privileges)
+forkPrivileges p parentId childId =
+    forkReplaceAddressSpaces (p, p)
+    where forkReplaceAddressSpaces (parent, child) =
+              ( parent { canReplaceAddressSpaces = S.insert childId (canReplaceAddressSpaces parent) }
+              , if parentId `S.member` canReplaceAddressSpaces p
+                   then child { canReplaceAddressSpaces = S.insert childId .
+                                                          S.delete parentId .
+                                                           canReplaceAddressSpaces $ child }
+                   else child { canReplaceAddressSpaces = S.delete parentId (canReplaceAddressSpaces child) } )
 
 -- There is a strict ordering on privilege sets. A privilege set A is
 -- less than or equal to a privilege set B if every privilege in A is
@@ -31,6 +44,7 @@ instance Ord Privileges where
     a <= b = checkImplies canCreateAddressSpace &&
              checkImplies canGrantPrivileges &&
              checkImplies canRevokePrivileges &&
+             checkImplies canRequestIO &&
              checkAddressRange canModifyAddressSpace &&
              checkAddressRange canAddFromPhysicalMapping &&
              checkSubset canReplaceAddressSpaces
@@ -63,7 +77,8 @@ instance Monoid Privileges where
                                             (canReplaceAddressSpaces a)
                                             (canReplaceAddressSpaces b)
                 , canGrantPrivileges = canGrantPrivileges a || canGrantPrivileges b
-                , canRevokePrivileges = canRevokePrivileges a || canRevokePrivileges b }
+                , canRevokePrivileges = canRevokePrivileges a || canRevokePrivileges b
+                , canRequestIO = canRequestIO a || canRequestIO b }
         where combineRanges Nothing x = x
               combineRanges x Nothing = x
               combineRanges (Just (AR aStart aEnd)) (Just (AR bStart bEnd)) =
@@ -74,3 +89,6 @@ canKillP taskId = mempty { canKill = S.singleton taskId }
 
 canReplaceAddressSpaceP :: TaskId -> Privileges
 canReplaceAddressSpaceP taskId = mempty { canReplaceAddressSpaces = S.singleton taskId }
+
+canRequestIOP :: Privileges
+canRequestIOP = mempty { canRequestIO = True }

@@ -191,7 +191,7 @@ gc_perform_gc(gc_t gc)
         debugf("\n");
         gc_mark_deeper(&stack, &number_redirects); // Final marking
 #ifdef _JHC_BAREBONES
-	ext_free(stack.stack);
+	ext_free(stack.stack, stack.size * sizeof(stack.stack[0]));
 #else
 	free(stack.stack);
 #endif
@@ -451,9 +451,10 @@ s_cleanup_blocks(struct s_arena *arena)
                                 }
                         }
                         void *ptr = pg;
+			size_t sz = pg->u.m.num_ptrs * sizeof(uintptr_t);
                         pg = SLIST_NEXT(pg, link);
 #ifdef _JHC_BAREBONES
-                        ext_free(ptr);
+                        ext_free(ptr, sz);
 #else
 			free(ptr);
 #endif

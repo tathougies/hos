@@ -20,6 +20,6 @@ void add_free_region(mem_allocator_t *allocator, regions_t *regions, uintptr_t b
 void add_used_region(mem_allocator_t *allocator, regions_t *regions, uintptr_t base_addr, uint64_t length);
 
 uintptr_t alloc_from_regions(size_t sz);
-void free_from_regions(uintptr_t ptr);
+void free_from_regions(uintptr_t ptr, size_t sz);
 
 #endif

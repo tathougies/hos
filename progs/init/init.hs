@@ -1,16 +1,20 @@
 module Main where
 
 import Hos.User.SysCall
+import Hos.Common.Types
 
 import Control.Monad
 
+import Data.Word
+import Data.Elf
+
+import Numeric
+
 main :: IO ()
-main = do hosDebugLog "Going to try (++)"
-          doChild
-          childId <- hosFork
+main = do childId <- hosFork
           case childId of
-            0 -> doParent
-            _ -> doChild
+            0 -> doChild
+            _ -> doParent
 
 doParent :: IO ()
 doParent = do hosDebugLog "Hello from the parent!"
@@ -22,12 +26,27 @@ doParent = do hosDebugLog "Hello from the parent!"
               hosDebugLog "Hello parent 3"
 
 doChild :: IO ()
-doChild = do -- Now, we want to launch all the modules that were given to us on the command line
-             hosDebugLog "hello from child"
+doChild = do -- Now, we want to launch the second module given to us on the command line, which should be the storage server
+             hosDebugLog "[init] checking for storage server..."
              modCount <- hosModuleCount
-             modsInfo <- mapM hosGetModuleInfo [1..(modCount - 1)]
-             hosDebugLog "Init is going to start modules..."
-             forM_ modsInfo $ \modInfo -> hosDebugLog ("Found module Module Info info info) -- " ++ show modInfo)
+             if modCount < 2
+                then hosDebugLog "[init] no storage.elf module given..."
+                else do ModuleInfo _ start end <- hosGetModuleInfo 1
+                        let vBase = 0xC000000000 :: Word64
+                            vEnd = (fromIntegral (end - start)) + vBase
+
+                        hosAddMappingToCurTask vBase vEnd (FromPhysical RetainInParent (UserSpace ReadOnly) (fromIntegral start))
+                        hosDebugLog "[init] mapped storage module. going to read ELF information..."
+                        (elfHdr, progHdrs) <- elf64ProgHdrs (wordToPtr vBase)
+                        aRef <- hosEmptyAddressSpace
+                        forM_ progHdrs $ \progHdr ->
+                            case ph64Type progHdr of
+                              PtLoad -> hosAddMapping aRef (ph64VAddr progHdr) (ph64VAddr progHdr + ph64MemSz progHdr) (CopyOnWrite (UserSpace ReadWrite) (ph64Offset progHdr + fromIntegral start))
+                              _ -> return 0
+                        hosDebugLog ("[init] exec storage.elf(entry at " ++ showHex (e64Entry elfHdr) "" ++ ")...")
+                        hosEnterAddressSpace aRef (e64Entry elfHdr)
+
+
 -- import Hos.User.SysCall
 -- import Hos.User.Modulem
 

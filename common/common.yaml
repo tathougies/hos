@@ -1,0 +1,8 @@
+name: hos-common
+version: 0.0.1
+exposed-modules:
+  - Data.Elf
+  - Hos.Common.Types
+  - Hos.Common.Bundle
+build-depends:
+  - applicative

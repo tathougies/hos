@@ -2,8 +2,10 @@ name: hos
 version: 0.0.1
 exposed-modules:
   - Hos.User.SysCall
+  - Hos.User.IO
 build-depends:
   - applicative
+  - hos-common
 include:
   - ../cbits
 extensions:

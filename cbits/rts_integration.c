@@ -36,7 +36,7 @@ void *buddy_page_alloc(mem_allocator_t *a)
 
 void buddy_page_free(mem_allocator_t *a, void *ptr)
 {
-  free_from_regions((uintptr_t) ptr);
+  free_from_regions((uintptr_t) ptr, ARCH_PAGE_SIZE);
 }
 
 void *memset(void *s, int c, unsigned long n)
@@ -87,9 +87,10 @@ void *ext_page_aligned_realloc(void *ret, size_t sz)
   }
 }
 
-void ext_free(void *ptr)
+void ext_free(void *ptr, size_t sz)
 {
-  free_from_regions((uintptr_t) ptr);
+  /* TODO bring dlmalloc into kernel-land */
+  //free_from_regions((uintptr_t) ptr, sz);
 }
 
 struct s_megablock *ext_alloc_megablock()
@@ -147,15 +148,24 @@ char *strncpy(char *dest, const char *src, size_t n)
         *dest++ = 0;
     return ret;
 }
-
+extern uint64_t g_mem_used;
 void jhc_exit(int c) {
-  if (c == 0)
-    klog("The Haskell kernel says bye-bye now");
-  else {
+  if (c == 0) {
+    klog("The Haskell kernel says bye-bye now. It used ");
+    klog_hex(g_mem_used);
+    klog(" physical bytes");
+  } else {
     klog("Kernel left because of error: ");
     klog_hex(c);
   }
   for (;;) asm("hlt");
 }
+
+void ext_halt() {
+  klog("The Haskell kernel says bye-bye now (ext_halt). It used ");
+  klog_hex(g_mem_used);
+  klog(" physical bytes");
+  for (;;);
+};
 
 /* Some floating point stuff */

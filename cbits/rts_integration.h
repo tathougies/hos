@@ -7,7 +7,7 @@
 
 void *ext_page_aligned_alloc(size_t sz);
 void *ext_page_aligned_realloc(void *ret, size_t sz);
-void ext_free(void *ptr);
+void ext_free(void *ptr, size_t sz);
 struct s_megablock *ext_alloc_megablock();
 struct s_cache *ext_alloc_cache();
 void arch_invalidate_page(uintptr_t ptr);
@@ -17,7 +17,7 @@ void jhc_error(char *s);
 
 inline void jhc_utf8_putchar(int c) { };
 void jhc_exit(int c);
-inline void ext_halt() { for (;;); };
+void ext_halt();
 inline uintptr_t ptrToWord(void *p) { return (uintptr_t) p; }
 inline void *wordToPtr(uintptr_t p) { return (void *) p; }
 

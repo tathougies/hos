@@ -1,13 +1,14 @@
 include build.opts
 
-.PHONY: all clean rts hos cbits progs test
+.PHONY: all clean common rts hos cbits progs test util
 
-all: rts hos cbits progs hos.iso
+all: rts common hos cbits util progs hos.iso
 
 hos.iso: rts hos cbits kernel.bin kernel.elf
 	@echo "Building ISO image..."
 	cp kernel.bin cd/hos.bin
-	cp build/progs/*.elf cd/
+	cp build/progs/init.elf build/progs/storage.elf cd/
+	cp build/hos.bundle cd
 	${XORRISO} -as mkisofs -o hos.iso -b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table cd
 
 kernel.bin: build/libcbits.a build/librts.a build/hos.o linker.ld
@@ -25,8 +26,15 @@ cbits:
 rts:
 	make -C rts
 
+common:
+	make -C common
+
 hos:
 	make -C src
+
+util:
+	make -C util
+
 
 test:
 	make -C cbits test
@@ -35,3 +43,4 @@ test:
 
 clean:
 	rm -rf build
+	make -C util clean

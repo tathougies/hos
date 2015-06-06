@@ -31,7 +31,7 @@ strict !x = x
 
 main :: IO ()
 main = do
-  -- Yay! We're now in Haskel(!!) land
+  -- Yay! We're now in Haskell(!!) land
   --
   -- There are a few steps here before we can really get into the nitty gritty of being
   -- an operating system.
@@ -52,7 +52,7 @@ main = do
 #endif
 
 hosMain :: (Show regs, Show vTbl, Show e, Registers regs) => Arch regs vTbl e -> IO ()
-hosMain a = do archDebugLog a ("Starting in Haskell land!")
+hosMain a = do archDebugLog a "[kernel] starting in Haskell land"
 
                -- The loader will have loaded the init task at 4 megabytes, but it's an ELF file
                -- so we should parse it, unmap it from the address space, and then establish new mappings
@@ -68,7 +68,7 @@ hosMain a = do archDebugLog a ("Starting in Haskell land!")
                initTask <- mkInitTask a (e64Entry elfHdr)
 
                -- Now, add the mapping into the task
-               let initTask' = foldr (\(vAddr, sz, physBase) -> taskWithMapping vAddr (vAddr + sz) (Mapped (UserSpace ReadWrite) physBase)) initTask mappings
+               let initTask' = foldr (\(vAddr, sz, physBase) -> taskWithMapping vAddr (vAddr + sz) (CopyOnWrite (UserSpace ReadWrite) physBase)) initTask mappings
 
                -- Now we want to get ready for userspace.
                archReadyForUserspace a
@@ -115,14 +115,18 @@ kernelize a st =
                   Left err -> archDebugLog a ("Architectural panic: " ++ show err)
          SysCallInterrupt (DebugLog s n) ->
              runSysCall (debugLog s n) a st >>= kernelize a
+         SysCallInterrupt EmptyAddressSpace ->
+             runSysCall emptyAddressSpace a st >>= kernelize a
          SysCallInterrupt (CurrentAddressSpace taskId) ->
-             do runSysCall (currentAddressSpace taskId) a st >>= kernelize a
+             runSysCall (currentAddressSpace taskId) a st >>= kernelize a
          SysCallInterrupt (AddMapping addrSpaceRef range mapping) ->
              runSysCall (addMapping addrSpaceRef range mapping) a st >>= kernelize a
          SysCallInterrupt (SwitchToAddressSpace taskId addrSpaceRef) ->
              runSysCall (switchToAddressSpace taskId addrSpaceRef) a st >>= kernelize a
          SysCallInterrupt (CloseAddressSpace addrSpaceRef) ->
              runSysCall (closeAddressSpace addrSpaceRef) a st >>= kernelize a
+         SysCallInterrupt (EnterAddressSpace addrSpaceRef entry) ->
+             runSysCall (enterAddressSpace addrSpaceRef entry) a st >>= kernelize a
          SysCallInterrupt (KillTask taskId) ->
              runSysCall (killTask taskId) a st >>= kernelize a
          SysCallInterrupt CurrentTask ->
@@ -138,6 +142,8 @@ kernelize a st =
          SysCallInterrupt (GetModuleInfo i p) ->
              do archGetBootModule a i (castPtr p)
                 kernelize a st
+         SysCallInterrupt RequestIO ->
+             runSysCall requestIO a st >>= kernelize a
          TrapInterrupt ProtectionException -> archUserPanic a
          _ -> do rip <- x64GetUserRIP
                  archDebugLog a ("Got back from userspace because of a " ++ show rsn ++ " at " ++ showHex rip "")
@@ -165,6 +171,26 @@ currentAddressSpace taskId =
        curTask <- getCurrentTask
        let newAddressSpaceRef = nextRef AddressSpaceRef unAddressSpaceRef (taskAddressSpaces curTask)
        setCurrentTask (curTask { taskAddressSpaces = M.insert newAddressSpaceRef addrSpace (taskAddressSpaces curTask) })
+
+emptyAddressSpace :: SysCallM r v e ()
+emptyAddressSpace =
+    do curTask <- getCurrentTask
+       let newAddressSpaceRef = nextRef AddressSpaceRef unAddressSpaceRef (taskAddressSpaces curTask)
+       setCurrentTask (curTask { taskAddressSpaces = M.insert newAddressSpaceRef baseAddressSpace (taskAddressSpaces curTask) })
+
+enterAddressSpace :: Registers r => AddressSpaceRef -> Word64 -> SysCallM r v e ()
+enterAddressSpace aRef entry =
+    do curTask <- getCurrentTask
+       addrSpace <- getAddressSpace curTask aRef
+       arch <- getArch
+       newMemTbl <- liftIO $ do tbl <- archNewVirtMemTbl arch
+                                archMapKernel arch tbl
+                                return tbl
+       curTask' <- liftIO (archSwitchTasks arch curTask curTask)
+       let curTask'' = (taskWithDeletedAddressSpace aRef curTask') { taskVirtMemTbl = newMemTbl, taskSavedRegisters = registersWithIP (InstructionPtr entry) (taskSavedRegisters curTask'), taskAddressSpace = addrSpace }
+       x <- liftIO $ do archSwitchTasks arch curTask curTask''
+                        archReleaseVirtMemTbl arch (taskAddressSpace curTask) (taskVirtMemTbl curTask)
+       x `seq` setCurrentTask curTask''
 
 addMapping :: AddressSpaceRef -> AddressRange -> Mapping -> SysCallM r v e ()
 addMapping addrSpaceRef (AR start end) mapping =
@@ -203,23 +229,33 @@ yieldSc = do curPrio <- getCurrentTaskPriority
 
 forkSc :: SysCallM r v e TaskId
 forkSc = do curTask <- getCurrentTask
+            curTaskId <- getCurrentTaskId
             a <- getArch
             (curTask'', childTask) <- liftIO $ do curTask' <- archSwitchTasks a curTask curTask
                                                   taskFork a curTask'
             childTask' <- liftIO $ do
                             t1 <- archSwitchTasks a curTask childTask
                             () <- archReturnToUserspace a (fromSysCallReturnable (TaskId 0))
-                            t1 `seq` archSwitchTasks a childTask curTask''
+                            newChildTask <- archSwitchTasks a childTask curTask''
+                            t2 <- archReleaseVirtMemTbl a (taskAddressSpace curTask) (taskVirtMemTbl curTask)
+                            t1 `seq` t2 `seq` return newChildTask
 
             childId <- newTaskId
 
-            x1 <- setTask childId childTask'
-            x2 <- setCurrentTask curTask''
+            let (parentPrivileges, childPrivileges) = forkPrivileges (taskPrivileges curTask'') curTaskId childId
+                childTask'' = childTask' { taskPrivileges = childPrivileges }
+                curTask''' = curTask'' { taskPrivileges = parentPrivileges }
 
-            x3 <- scDebugLog ("after fork, new address space is " ++ show (taskAddressSpace curTask''))
+            x1 <- setTask childId childTask''
+            x2 <- setCurrentTask curTask'''
 
             curPrio <- getCurrentTaskPriority
-            x4 <- scheduleTask curPrio childId
+            x3 <- scheduleTask curPrio childId
 
             -- This gets around a bug in JHC...
-            return (x1 `seq` x2 `seq` x3 `seq` x4 `seq` childId)
+            return (x1 `seq` x2 `seq` x3 `seq` childId)
+
+requestIO :: SysCallM r v e ()
+requestIO = ensuringPrivileges canRequestIOP $
+            do a <- getArch
+               liftIO (archEnableIO a)

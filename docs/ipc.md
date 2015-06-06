@@ -46,7 +46,7 @@ The WaitOnChannels(chan-id-ptr, count, flags, ret-sender-task-id, timeout) syste
   * HOS_WAIT_ON_CHANNELS_MSG_TRUNCATED_STATUS (0x2) -- Indicates that the message was truncated on delivery. This happens if there is no mapping in the address space for one of the channel ids, or if the virtual address range assigned to the mapping is not large enough to hold the message sent. In this case, the remaining pages are thrown out, and cannot be recovered. User software is encouraged to explicitly indicate the maximum size of a response in any message between processes.
   * HOS_WAIT_ON_CHANNELS_MSG_REPLIED (0x4) -- Indicates the the channel received a response and not a new message
 
-The other bits are reserved for future use, and should be ignored by processes.
+  The other bits are reserved for future use, and should be ignored by processes.
 
 On error (HOS_WAIT_ON_CHANNELS_ERROR_STATUS is set in the higher word), the lower word contains an indication of the failure, and the value of ret-sender-task-id depends on the exact failure that occured. The current failure indicators are
 

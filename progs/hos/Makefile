@@ -1,7 +1,11 @@
 .PHONY: all
 
-all:
-	jhc --build-hl=hos.yaml
+include ../../build.opts
+
+all: hos-0.0.1.hl
+
+hos-0.0.1.hl: Hos/User/SysCall.hs Hos/User/IO.hs
+	jhc  -DTARGET=$(TARGET) --build-hl=hos.yaml -L../../common -fcpp -fffi
 
 clean:
 	rm *.hl

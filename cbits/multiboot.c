@@ -41,6 +41,8 @@ uint32_t g_pages_allocated_count = 0;
 mboot_module_info_t g_mboot_modules[MAX_MODULE_COUNT];
 int g_module_count;
 
+uint64_t g_mem_used = 0;
+
 DECL_MEMPOOL_TYPE(buddy_region_t);
 DECL_RB_TREE(buddy_region_t, uintptr_t);
 void add_free_region(mem_allocator_t *allocator, regions_t *regions, uintptr_t base_addr, uint64_t length);
@@ -182,7 +184,7 @@ int initialize_regions(struct multiboot_info *mboot, regions_t *regions)
 
   DECL_POOL_ALLOCATOR(&g_buddy_pool, &mapping_alloc, buddy_region_t, bootstrap_buddy_allocator);
 
-  klog("Initializing regions! ");
+  klog("[bootstrap] initializing regions");
   memset(regions, 0, sizeof(*regions));
 
   if ( (mboot->flags & MBI_FLAG_MMAP) == 0 ) {
@@ -226,7 +228,7 @@ int initialize_regions(struct multiboot_info *mboot, regions_t *regions)
   }
 
   /* Now, go through all the bootstrap allocated pages and mark them as used. Also, we should mark used all the kernel and module pages */
-  klog("Fixing up mmap after bootstrap... ");
+  klog("[bootstrap] fixing up mmap after bootstrap... ");
 
   /* First the kernel */
   add_used_region(&bootstrap_buddy_allocator, regions, 0x100000, PAGE_ADDR((KERNEL_SIZE + ARCH_PAGE_SIZE - 1)));
@@ -238,8 +240,8 @@ int initialize_regions(struct multiboot_info *mboot, regions_t *regions)
   for ( i = 0; i < g_pages_allocated_count; ++i ) {
     add_used_region(&bootstrap_buddy_allocator, regions, g_pages_allocated[i], ARCH_PAGE_SIZE);
   }
+  klog("done\n");
 
-  klog("Done with bootstrap ");
   return 0;
 }
 
@@ -264,9 +266,9 @@ void bootstrap_kernel()
   g_mboot_hdr_ptr = REAL_MODE_ADDR(g_mboot_hdr_ptr);
   g_module_count = 0;
   copy_modules(g_mboot_hdr_ptr, g_mboot_modules, &g_module_count);
-  klog("Have ");
+  klog("[bootstrap] Have ");
   klog_hex(g_module_count);
-  klog(" modules");
+  klog(" modules\n");
   initialize_regions(g_mboot_hdr_ptr, &g_buddy_regions);
 
   /* We're also going to go ahead and map the first multiboot module completely into memory starting at 0x400000 */
@@ -285,6 +287,7 @@ void bootstrap_kernel()
 
   /* Now, allocate a new stack for us */
   // switch_stacks(512KB)
+  klog("[bootstrap] Entering Haskell-land\n");
 }
 
 #define ALIGN(addr, size) (addr & ~(size - 1))
@@ -307,21 +310,21 @@ void add_free_region(mem_allocator_t *allocator, regions_t *regions, uintptr_t b
       region = ARCH_WORD_WIDTH;
     else
       region = MIN(ARCH_LOWEST_SET_BIT(aligned_base), REGION_MAX_SIZE_BIT);
-    printf("Using base %p %d %d %d\n", aligned_base, region, ARCH_LOWEST_SET_BIT(aligned_base) - 1, ARCH_LOWEST_SET_BIT(aligned_base));
+    /*printf("Using base %p %d %d %d\n", aligned_base, region, ARCH_LOWEST_SET_BIT(aligned_base) - 1, ARCH_LOWEST_SET_BIT(aligned_base)); */
     region = MIN(ARCH_LOWEST_SET_BIT(length_after_alignment), region);
-    printf("using length %d\n", region);
+    /*printf("using length %d\n", region);*/
     region = MIN((region - ARCH_PAGE_WIDTH), REGION_COUNT - 1);
-    printf("adding %p to region %d (%llx -> MIN(%d, %d))\n", aligned_base, region, length_after_alignment, ARCH_LOWEST_SET_BIT(base_addr) - 1, ARCH_LOWEST_SET_BIT(length_after_alignment) - 1);
+    /*printf("adding %p to region %d (%llx -> MIN(%d, %d))\n", aligned_base, region, length_after_alignment, ARCH_LOWEST_SET_BIT(base_addr) - 1, ARCH_LOWEST_SET_BIT(length_after_alignment) - 1);*/
     assert(region >= 0 && region < (REGION_MAX_SIZE_BIT - ARCH_PAGE_WIDTH));
 
     /* Now check if our neighbor could also be in this region. If they are, then merge. */
     new_region_length = 1 << (region + ARCH_PAGE_WIDTH);
-    printf("The new length will be %llx\n", new_region_length);
+    /* printf("The new length will be %llx\n", new_region_length); */
     assert(new_region_length <= length);
 
     buddy_region_base = aligned_base & ~((new_region_length << 1) - 1);
     buddy_addr = buddy_region_base == aligned_base ? (buddy_region_base + new_region_length) : buddy_region_base;
-    printf("Our buddy region will be %llx\n", buddy_addr);
+    /* printf("Our buddy region will be %llx\n", buddy_addr); */
 
     buddy_region = RB_TREE_LOOKUP(buddy_region_t, regions->regions[region], buddy_addr);
 
@@ -502,6 +505,8 @@ uintptr_t _alloc_from_regions(mem_allocator_t *temp_page_allocator, regions_t *r
 
   if (aligned_sz == 0) return 0;
 
+  g_mem_used += aligned_sz;
+
   /* Now we need to re-align size to the next highest power of two */
   new_alignment = (1UL << ARCH_HIGHEST_SET_BIT(aligned_sz));
   aligned_sz = ALIGN((aligned_sz + new_alignment - 1), new_alignment);
@@ -550,8 +555,25 @@ uintptr_t _alloc_from_regions(mem_allocator_t *temp_page_allocator, regions_t *r
   return base_addr;
 }
 
-void free_from_regions(uintptr_t ptr)
+void free_from_regions(uintptr_t ptr, size_t sz)
 {
+  /* TODO we use the null allocator here for now, but we need to use a static allocator or something to ensure that we never run out of pages */
+  DECL_POOL_ALLOCATOR(&g_buddy_pool, &null_allocator, buddy_region_t, buddy_region_allocator);
+  size_t aligned_sz = PAGE_ADDR((sz + ARCH_PAGE_SIZE - 1)), new_alignment;
+
+  if (aligned_sz == 0) return;
+
+  new_alignment = (1UL << ARCH_HIGHEST_SET_BIT(aligned_sz));
+  aligned_sz = ALIGN((aligned_sz + new_alignment - 1), new_alignment);
+  g_mem_used -= aligned_sz;
+  klog("free_from_regions(");
+  klog_hex(ptr);
+  klog(",");
+  klog_hex(sz);
+  klog("(aligned to ");
+  klog_hex(aligned_sz);
+  klog("))");
+  add_free_region(&buddy_region_allocator, &g_buddy_regions, ptr, aligned_sz);
 }
 
 void jhc_init_msg()

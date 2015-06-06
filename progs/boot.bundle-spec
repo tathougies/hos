@@ -1,0 +1,74 @@
+# This is the file used to build the hos bundle
+#
+# The bundle is loaded as the third multiboot module, and is used by the storage server
+# until appropriate file system drivers are loaded. You should include in here all
+# drivers and daemons that are necessary to boot the system.
+#
+# By default, storage will start all executables tagged as com.hos.autoboot. Make sure to
+# also set the system.executable flag. Set the com.hos.autoboot-order if you'd like to specify
+# the order in which the servers are started.
+tags:
+  com.bundle.short-description:
+    type: text
+  com.hos.autoboot:
+    type: boolean
+    default: false
+  com.hos.autostart:
+    type: text
+    description: Name of an event that should automatically trigger this executable to be started
+  system.executable:
+    type: boolean
+    default: false
+  com.hos.autoboot.order:
+    type: integer
+    default: 100
+  com.hos.gpt-partition-type:
+    type: text
+    description: The GUID for the GPT partition type that this driver can read
+  com.hos.service-name:
+    type: text
+    description: Name of the Hos service provided by this server/driver
+content:
+  - location: ../build/progs/pci.elf
+    tags:
+      - com.hos.autoboot
+      - system.executable
+      - com.bundle.short-description: PCI server
+      - com.hos.autoboot.order: 1
+      - com.hos.service-name: hos.dev.pci
+  - location: ../build/progs/ata.elf
+    tags:
+      - system.executable
+      - com.bundle.short-description: ATA server
+      - com.hos.service-name: hos.dev.ata
+        # The following allow us to be automatically started by the PCI server
+      - com.hos.driver
+      - com.hos.dev.pci.auto-start
+
+        # VMWare PIIX3 IDE controller
+      - com.hos.dev.pci.supported-device: 8086:7111
+#   - location: ahci.elf
+#     tags:
+# #      - com.hos.autoboot
+#       - system.executable
+#       - com.bundle.short-description: SATA/AHCI driver
+#       - com.hos.autoboot.order: 2
+#       - com.hos.service-name: hos.dev.ahci
+#   # - path: hos-bundle-block.elf
+#   #   tags:
+#   #     - com.hos.gpt-partition-type: 080ee1e6-3488-47ea-8be0-65d9b18fe552
+#   #     - system.executable
+#   #     - com.bundle.short-description: Driver for serializing/reading Hos bundles from physical block devices
+#   #     - com
+#   - location: hos-fs-iso9660.elf
+#     tags:
+#       - system.executable
+#       - com.bundle.short-description: Implements the foreign file system interface to expose ISO9660 file systems as standard Hos data sources
+#       - com.hos.service-name: hos.data.foreign.fs.iso9660
+#       - com.hos.autostart: hos.dev.ahci.found-cdrom
+#   - location: hos-storage-foreign-fs.elf
+#     tags:
+#       - system.executable
+#       - com.bundle.short-description: Provides a generic storage backend atop foreign file system drivers
+#       - com.hos.service-name: hos.data.foreign.fs
+#       - com.hos.autostart: hos.data.foreign.fs.driver-started # this will be called whenever a file system driver sends the driver-started message
