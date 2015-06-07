@@ -33,3 +33,18 @@ memcpy !dst !src sz = peek (castPtr src :: Ptr Word8) >>= poke (castPtr dst) >>
 
 addrSpaceWithMapping :: Word64 -> Word64 -> Mapping -> AddressSpace -> AddressSpace
 addrSpaceWithMapping start end = IntervalMap.insert (start, end)
+
+releaseAddressSpace :: Arch r v e -> AddressSpace -> v -> IO ()
+releaseAddressSpace arch aSpace virtMemTbl =
+    do let regions = IntervalMap.assocs aSpace
+       forM_ regions $ \((start, end), mapping) ->
+           case mapping of
+             Mapped _ physBase ->
+                 -- We need to subtract 1 from end because the mappings in the address space are closed-open, and archWalkVirtMemTbl assumes a closed interval
+                 archWalkVirtMemTbl arch virtMemTbl start (end - 1) $ \_ phys ->
+                     cPageAlignedPhysFree phys (alignToPage arch (end - start + fromIntegral (archPageSize arch) - 1))
+             CopyOnWrite {} -> return () -- TODO: Skipping COW region at " ++ showHex start "")
+
+             -- The other memory types either cannot be freed, or we don't need to
+             _ -> return ()
+       archReleaseVirtMemTbl arch virtMemTbl

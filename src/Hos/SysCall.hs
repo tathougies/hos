@@ -3,6 +3,7 @@ module Hos.SysCall where
 import Hos.Types
 import Hos.Privileges ()
 import Hos.Task
+import Hos.Memory
 import Hos.CBits
 
 import Control.Applicative
@@ -96,7 +97,11 @@ setTask taskId task = do st <- getHosState
 deleteTask :: TaskId -> SysCallM r v e ()
 deleteTask taskId = do st <- getHosState
                        let st' = st { hosTasks = M.delete taskId (hosTasks st) }
-                       setHosState st'
+                       x <- setHosState st'
+                       x `seq` case M.lookup taskId (hosTasks st) of
+                         Just task -> do arch <- getArch
+                                         liftIO (releaseAddressSpace arch (taskAddressSpace task) (taskVirtMemTbl task))
+                         Nothing -> return ()
 
 scDebugLog :: String -> SysCallM r v e ()
 scDebugLog msg = do a <- getArch

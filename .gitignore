@@ -12,3 +12,5 @@ cd/
 #*#
 prefix/
 *.hl
+*.hi
+*.o

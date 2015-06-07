@@ -89,7 +89,7 @@ hosMain a = do archDebugLog a "[kernel] starting in Haskell land"
 
                kernelize a initialState
 
-kernelize :: (Registers regs, Show e, Show regs) => Arch regs vMemTbl e -> HosState regs vMemTbl e -> IO ()
+kernelize :: (Registers regs, Show e, Show regs, Show vMemTbl) => Arch regs vMemTbl e -> HosState regs vMemTbl e -> IO ()
 kernelize a st =
     do rsn <- archSwitchToUserspace a
        let taskId = hscCurrentTask (hosSchedule st)
@@ -148,7 +148,7 @@ kernelize a st =
          _ -> do rip <- x64GetUserRIP
                  archDebugLog a ("Got back from userspace because of a " ++ show rsn ++ " at " ++ showHex rip "")
 
-runSysCall :: (SysCallReturnable a, Registers r, Show e, Show r) => SysCallM r v e a -> Arch r v e -> HosState r v e -> IO (HosState r v e)
+runSysCall :: (SysCallReturnable a, Registers r, Show e, Show r, Show v) => SysCallM r v e a -> Arch r v e -> HosState r v e -> IO (HosState r v e)
 runSysCall sc a st = do res <- runSysCallM sc a st
                         case res of
                           Error e -> archReturnToUserspace a (fromSysCallReturnable e) >>
@@ -189,7 +189,7 @@ enterAddressSpace aRef entry =
        curTask' <- liftIO (archSwitchTasks arch curTask curTask)
        let curTask'' = (taskWithDeletedAddressSpace aRef curTask') { taskVirtMemTbl = newMemTbl, taskSavedRegisters = registersWithIP (InstructionPtr entry) (taskSavedRegisters curTask'), taskAddressSpace = addrSpace }
        x <- liftIO $ do archSwitchTasks arch curTask curTask''
-                        archReleaseVirtMemTbl arch (taskAddressSpace curTask) (taskVirtMemTbl curTask)
+                        releaseAddressSpace arch (taskAddressSpace curTask) (taskVirtMemTbl curTask)
        x `seq` setCurrentTask curTask''
 
 addMapping :: AddressSpaceRef -> AddressRange -> Mapping -> SysCallM r v e ()
@@ -227,7 +227,7 @@ yieldSc = do curPrio <- getCurrentTaskPriority
              curTask' <- switchToNextTask
              x1 `seq` setTask curTaskId curTask'
 
-forkSc :: SysCallM r v e TaskId
+forkSc :: Show v => SysCallM r v e TaskId
 forkSc = do curTask <- getCurrentTask
             curTaskId <- getCurrentTaskId
             a <- getArch
@@ -237,8 +237,7 @@ forkSc = do curTask <- getCurrentTask
                             t1 <- archSwitchTasks a curTask childTask
                             () <- archReturnToUserspace a (fromSysCallReturnable (TaskId 0))
                             newChildTask <- archSwitchTasks a childTask curTask''
-                            t2 <- archReleaseVirtMemTbl a (taskAddressSpace curTask) (taskVirtMemTbl curTask)
-                            t1 `seq` t2 `seq` return newChildTask
+                            t1 `seq` return newChildTask
 
             childId <- newTaskId
 

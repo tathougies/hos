@@ -566,13 +566,6 @@ void free_from_regions(uintptr_t ptr, size_t sz)
   new_alignment = (1UL << ARCH_HIGHEST_SET_BIT(aligned_sz));
   aligned_sz = ALIGN((aligned_sz + new_alignment - 1), new_alignment);
   g_mem_used -= aligned_sz;
-  klog("free_from_regions(");
-  klog_hex(ptr);
-  klog(",");
-  klog_hex(sz);
-  klog("(aligned to ");
-  klog_hex(aligned_sz);
-  klog("))");
   add_free_region(&buddy_region_allocator, &g_buddy_regions, ptr, aligned_sz);
 }
 

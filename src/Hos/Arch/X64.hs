@@ -35,12 +35,9 @@ data X64PageTableIndex = X64PageTableIndex
 
 type X64HosState = HosState X64Registers X64PageTable X64Exception
 
-x64VideoBuffer :: IORef (Ptr Word8)
-x64VideoBuffer = unsafePerformIO $ newIORef (wordToPtr 0xffffff7f800b8000)
-
 foreign import "write_serial" writeSerial :: Word8 -> IO ()
 x64DebugLog:: String -> IO ()
-x64DebugLog s = let go {- ptr -} [] = writeSerial (fromIntegral (ord '\n')) -- 
+x64DebugLog s = let go {- ptr -} [] = writeSerial (fromIntegral (ord '\n'))
                     go {- ptr -} (!x:xs) = do writeSerial (fromIntegral (ord x))
                                               --poke ptr (fromIntegral (ord x))
                                               --poke (ptr `plusPtr` 1) (0x0f :: Word8)
@@ -63,6 +60,7 @@ x64 = Arch
     , archUnmapPage = x64UnmapPage
     , archTestPage = x64TestPage
     , archCopyPhysPage = x64CopyPhysPage
+    , archWalkVirtMemTbl = x64WalkVirtMemTbl
 
     , archGetCurVirtMemTbl = x64GetCurVirtMemTbl
 
@@ -88,11 +86,17 @@ x64KernelPDPTEntry :: Int
 x64KernelPDPTEntry = 0x1fe
 
 x64CurPt :: Int -> Int -> Int -> Ptr Word64
-x64CurPt pml4I pdptI pdtI = wordToPtr
-                          $ 0xffffff8000000000
-                            + (fromIntegral pml4I * 0x40000000)
-                            + (fromIntegral pdptI * 0x200000)
-                            + (fromIntegral pdtI * 0x1000)
+x64CurPt pml4I pdptI pdtI = wordToPtr (x64PtAddr pml4I pdptI pdtI)
+
+x64PtAddr :: Int -> Int -> Int -> Word64
+x64PtAddr pml4I pdptI pdtI = 0xffffff8000000000
+                             + (fromIntegral pml4I * 0x40000000)
+                             + (fromIntegral pdptI * 0x200000)
+                             + (fromIntegral pdtI  * 0x1000)
+
+x64PtAddrForVAddr :: Word64 -> Word64
+x64PtAddrForVAddr vAddr = let X64PageTableIndex pml4I pdptI pdtI _ = x64PTIndex vAddr
+                          in x64PtAddr pml4I pdptI pdtI
 
 x64CurPdt :: Int -> Int -> Ptr Word64
 x64CurPdt pml4I pdptI = x64CurPt 511 pml4I pdptI
@@ -102,7 +106,6 @@ x64CurPdpt pml4I = x64CurPdt 511 pml4I
 
 x64CurPml4 :: Ptr Word64
 x64CurPml4 = x64CurPdpt 511
-
 
 x64TaskRegisters :: StackPtr -> InstructionPtr -> X64Registers
 x64TaskRegisters (StackPtr stk) (InstructionPtr ip) =
@@ -119,10 +122,24 @@ x64NewVirtMemTbl = do
        pokeElemOff mapping 511 (newPageTbl .|. 3)
   return (X64PageTable newPageTbl)
 
-x64ReleaseVirtMemTbl :: AddressSpace -> X64PageTable -> IO ()
-x64ReleaseVirtMemTbl aSpace pgTbl =
-    -- TODO
-    return ()
+x64LastUserspaceByte :: Word64
+x64LastUserspaceByte = 0xfffffeffffffffff
+
+x64ReleaseVirtMemTbl :: X64PageTable -> IO ()
+x64ReleaseVirtMemTbl pgTbl@(X64PageTable pml4) =
+    do -- Examine the recursive mapping of pgTbl
+       -- Releases page tables
+       let x64PdtAddrForVAddr = x64PtAddrForVAddr . x64PtAddrForVAddr
+           x64PdptAddrForVAddr = x64PtAddrForVAddr . x64PdtAddrForVAddr
+       x64WalkVirtMemTbl pgTbl (x64PtAddrForVAddr 0) (x64PtAddrForVAddr x64LastUserspaceByte) $ \_ phys ->
+           cPageAlignedPhysFree phys 0x1000
+       -- Releases page directory tables
+       x64WalkVirtMemTbl pgTbl (x64PdtAddrForVAddr 0) (x64PdtAddrForVAddr x64LastUserspaceByte) $ \_ phys ->
+           cPageAlignedPhysFree phys 0x1000
+       -- Releases page directory pointer tables
+       x64WalkVirtMemTbl pgTbl (x64PdptAddrForVAddr 0) (x64PdptAddrForVAddr x64LastUserspaceByte) $ \_ phys ->
+           cPageAlignedPhysFree phys 0x1000
+       cPageAlignedPhysFree pml4 0x1000
 
 x64MapKernel :: X64PageTable -> IO ()
 x64MapKernel (X64PageTable pgTbl) =
@@ -256,6 +273,44 @@ x64CopyPhysPage src dest =
     withMapping x64 (Privileged ReadOnly) miscPage1 src $ \srcP ->
     withMapping x64 (Privileged ReadWrite) miscPage2 dest $ \destP ->
     memcpy destP srcP (fromIntegral x64PageSize)
+
+x64WalkVirtMemTbl :: X64PageTable -> Word64 -> Word64 -> (Word64 -> Word64 -> IO ()) -> IO ()
+x64WalkVirtMemTbl (X64PageTable pml4) start end visit = go
+    where canonicalAddr x
+              | testBit x 47 = 0xffff000000000000 .|. x
+              | otherwise = x
+
+          X64PageTableIndex pml4Start pdptStart pdtStart ptStart = x64PTIndex start
+          X64PageTableIndex pml4End pdptEnd pdtEnd ptEnd = x64PTIndex end
+
+          go = withMapping x64 (Privileged ReadOnly) miscPage4 pml4 $ \pml4P ->
+               forM_ [pml4Start..pml4End] $ \pml4I ->
+               peekElemOff pml4P pml4I >>= \pml4E ->
+               if testBit pml4E 0 then
+                   goPdpt (if pml4I == pml4Start then (pdptStart, pdtStart, ptStart) else (0, 0, 0))
+                          (if pml4I == pml4End then (pdptEnd, pdtEnd, ptEnd) else (511, 511, 511))
+                          (alignToPage x64 pml4E) (canonicalAddr (0x8000000000 * fromIntegral pml4I)) else return ()
+          goPdpt (pdptStart, pdtStart, ptStart) (pdptEnd, pdtEnd, ptEnd) pdptA base =
+              withMapping x64 (Privileged ReadOnly) miscPage5 pdptA $ \pdptP ->
+              forM_ [pdptStart..pdptEnd] $ \pdptI ->
+              peekElemOff pdptP pdptI >>= \pdptE ->
+              if testBit pdptE 0 then
+                  goPdt (if pdptI == pdptStart then (pdtStart, ptStart) else (0, 0))
+                        (if pdptI == pdptEnd then (pdtEnd, ptEnd) else (511, 511))
+                        (alignToPage x64 pdptE) (base + (0x40000000 * fromIntegral pdptI)) else return ()
+          goPdt (pdtStart, ptStart) (pdtEnd, ptEnd) pdtA base =
+              withMapping x64 (Privileged ReadOnly) miscPage6 pdtA $ \pdtP ->
+              forM_ [pdtStart..pdtEnd] $ \pdtI ->
+              peekElemOff pdtP pdtI >>= \pdtE ->
+              if testBit pdtE 0 then
+                  goPt (if pdtI == pdtStart then ptStart else 0)
+                       (if pdtI == pdtEnd then ptEnd else 511)
+                       (alignToPage x64 pdtE) (base + (0x200000 * fromIntegral pdtI)) else return ()
+          goPt ptStart ptEnd ptA base =
+              withMapping x64 (Privileged ReadOnly) miscPage7 ptA $ \ptP ->
+              forM_ [ptStart..ptEnd] $ \ptI ->
+              peekElemOff ptP ptI >>= \ptE ->
+              if testBit ptE 0 then visit (base + (0x1000 * fromIntegral ptI)) (alignToPage x64 ptE) else return ()
 
 x64GetCurVirtMemTbl :: IO X64PageTable
 x64GetCurVirtMemTbl = do pgTblAddr <- peekElemOff x64CurPml4 0x1ff

@@ -3,6 +3,7 @@ module Hos.Task where
 import Hos.CBits
 import Hos.Types
 import Hos.Privileges
+import Hos.Memory
 
 import Data.Word
 import Data.Maybe
@@ -109,10 +110,7 @@ handleFaultAt arch faultCause vAddr task =
 
 taskFork :: Arch r v e -> Task r v -> IO (Task r v, Task r v)
 taskFork a t =
-    do -- TODO free t's address space memory for realz...
-       -- archReleaseVirtMemTbl a (taskVirtMemTbl t)
-
-       parentMemTbl <- archNewVirtMemTbl a
+    do parentMemTbl <- archNewVirtMemTbl a
        childMemTbl <- archNewVirtMemTbl a
        archMapKernel a parentMemTbl
        archMapKernel a childMemTbl

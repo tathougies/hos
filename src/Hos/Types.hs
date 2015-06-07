@@ -86,12 +86,13 @@ data Arch regs vMemTbl archE =
     , archUnmapInitTask :: IO ()
 
     , archNewVirtMemTbl :: IO vMemTbl
-    , archReleaseVirtMemTbl :: AddressSpace -> vMemTbl -> IO ()
+    , archReleaseVirtMemTbl :: vMemTbl -> IO ()
     , archMapKernel :: vMemTbl -> IO ()
     , archMapPage :: Word64 -> Word64 -> MemoryPermissions -> IO ()
     , archTestPage :: Word64 -> MemoryPermissions -> IO Bool
     , archUnmapPage :: Word64 -> IO ()
     , archCopyPhysPage :: Word64 -> Word64 -> IO ()
+    , archWalkVirtMemTbl :: vMemTbl -> Word64 -> Word64 -> (Word64 -> Word64 -> IO ()) -> IO ()
 
     , archGetCurVirtMemTbl :: IO vMemTbl
 
