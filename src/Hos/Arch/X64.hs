@@ -14,7 +14,6 @@ import Data.Char
 import Data.IORef
 import Data.Monoid
 import Data.Bits
-import qualified Data.Map.Base as M
 
 import Foreign.Ptr
 import Foreign.Storable
@@ -410,6 +409,14 @@ x64GetUserSyscall =
          5 -> return (SwitchToAddressSpace (TaskId (fromIntegral sysCallArg1W)) (AddressSpaceRef (fromIntegral sysCallArg2W)))
          6 -> return EmptyAddressSpace
          7 -> return (EnterAddressSpace (AddressSpaceRef (fromIntegral sysCallArg1W)) sysCallArg2W)
+
+         0x100 -> return (DeliverMessage (ChanId (fromIntegral sysCallArg1W)) (MessageEndpoint (TaskId (fromIntegral sysCallArg2W)) (ChanId (fromIntegral sysCallArg3W))))
+         0x101 -> return (RouteMessage  (ChanId (fromIntegral sysCallArg1W)) (MessageEndpoint (TaskId (fromIntegral sysCallArg2W)) (ChanId (fromIntegral sysCallArg3W))))
+         0x102 -> return (ReplyToMessage (ChanId (fromIntegral sysCallArg1W)))
+         0x103 ->
+             do let wocFlags = WaitOnChannelsFlags (testBit sysCallArg1W 0) (testBit sysCallArg1W 1) (testBit sysCallArg1W 2)
+                return (WaitOnChannels wocFlags sysCallArg2W (wordToPtr sysCallArg3W))
+         0x104 -> return (UnmaskChannel (ChanId (fromIntegral sysCallArg1W)))
 
          0x300 -> return RequestIO
 

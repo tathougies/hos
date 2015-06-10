@@ -261,6 +261,7 @@ void copy_modules(struct multiboot_info *mboot, mboot_module_info_t *module_info
   }
 }
 
+extern int stack_unmap;
 void bootstrap_kernel()
 {
   g_mboot_hdr_ptr = REAL_MODE_ADDR(g_mboot_hdr_ptr);
@@ -284,7 +285,8 @@ void bootstrap_kernel()
       cur_phys_addr += ARCH_PAGE_SIZE;
     }
   }
-
+  klog("[bootstrap] unmapping stack overflow page...");
+  arch_unmap_page((uintptr_t) &stack_unmap);
   /* Now, allocate a new stack for us */
   // switch_stacks(512KB)
   klog("[bootstrap] Entering Haskell-land\n");
@@ -588,7 +590,7 @@ void arch_unmap_init_task()
 {
   if ( g_module_count >= 1 ) {
     uint64_t cur_virt_addr = 0x400000;
-    while ( (cur_virt_addr - 0x400000) < (g_mboot_modules[0].mod_phys_end - g_mboot_modules[0].mod_phys_start) ) {
+    while ( (cur_virt_addr - 0x400000) < (ROUND_UP(g_mboot_modules[0].mod_phys_end, ARCH_PAGE_SIZE) - g_mboot_modules[0].mod_phys_start) ) {
       arch_unmap_page(cur_virt_addr);
       cur_virt_addr += ARCH_PAGE_SIZE;
     }

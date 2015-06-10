@@ -30,10 +30,21 @@ archPciRead32 (PciSlot bus dev func) off =
                   fromIntegral off
        hosOut32 0xCF8 addr
        hosIn32 0xCFC
+
+archPciWrite32 :: PciSlot -> Word8 -> Word32 -> IO ()
+archPciWrite32 (PciSlot bus dev func) off x =
+    do let addr :: Word32
+           addr = (fromIntegral 1 `shiftL` 31) .|. (fromIntegral bus `shiftL` 16) .|.
+                  (fromIntegral dev `shiftL` 11) .|. (fromIntegral func `shiftL` 8) .|.
+                  fromIntegral off
+       hosOut32 0xCF8 addr
+       hosOut32 0xCFC x
 #endif
 
 archPciIO :: PciIO
 archPciIO = PciIO
           { pciRead8 = archPciRead8
           , pciRead16 = archPciRead16
-          , pciRead32 = archPciRead32 }
+          , pciRead32 = archPciRead32
+
+          , pciWrite32 = archPciWrite32 }

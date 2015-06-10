@@ -1,0 +1,10 @@
+name: storage
+version: 0.0.1
+exposed-modules:
+  - Hos.Storage.Msg
+build-depends:
+  - applicative
+  - hos-common
+  - hos
+include:
+  - ../cbits

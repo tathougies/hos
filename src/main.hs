@@ -8,8 +8,11 @@ import Data.Char
 import Data.Monoid
 import Data.IORef
 --import qualified Data.PQueue.Prio.Min as PQ
-import qualified Data.Map.Base as M
+import qualified Data.Map as M
+import qualified Data.Sequence as Seq
 import System.IO.Unsafe
+
+import Control.Applicative
 
 import Numeric
 
@@ -18,6 +21,7 @@ import Hos.Types
 import Hos.Task
 import Hos.Memory
 import Hos.SysCall
+import Hos.IPC
 import Hos.Privileges
 import Data.Elf
 
@@ -93,11 +97,13 @@ kernelize :: (Registers regs, Show e, Show regs, Show vMemTbl) => Arch regs vMem
 kernelize a st =
     do rsn <- archSwitchToUserspace a
        let taskId = hscCurrentTask (hosSchedule st)
-       rip <- x64GetUserRIP
---       archDebugLog a ("Back(Task" ++ show taskId ++ "): " ++ show rsn ++ " at " ++ showHex rip "" ++ " stack")
+--       rip <- x64GetUserRIP
+--       rsp <- x64GetRSP
+--       archDebugLog a ("Back(Task" ++ show taskId ++ "): " ++ show rsn ++ " at " ++ showHex rip ("stack is " ++ showHex rsp ""))
        case rsn of
          TrapInterrupt (VirtualMemoryFault vmCause vAddr) ->
              do t <- currentTask st
+--                archDebugLog a  ("On fault space is " ++ show (taskAddressSpace t))
                 res <- handleFaultAt a vmCause vAddr t
                 case res of
                   Right t' ->
@@ -108,6 +114,7 @@ kernelize a st =
                        archDebugLog a ("Can't map " ++ showHex vAddr "" ++ " at " ++ showHex rip "")
                        t' <- archSwitchTasks a t t
                        archDebugLog a ("Regs :" ++ show (taskSavedRegisters t'))
+                       archDebugLog a ("Address space: " ++ show (taskAddressSpace t'))
          TrapInterrupt (ArchException archE) ->
              do res <- archHandleException a archE st
                 case res of
@@ -127,6 +134,16 @@ kernelize a st =
              runSysCall (closeAddressSpace addrSpaceRef) a st >>= kernelize a
          SysCallInterrupt (EnterAddressSpace addrSpaceRef entry) ->
              runSysCall (enterAddressSpace addrSpaceRef entry) a st >>= kernelize a
+         SysCallInterrupt (DeliverMessage sourceChanId dst) ->
+             runSysCall (deliverMessage sourceChanId dst) a st >>= kernelize a
+         SysCallInterrupt (RouteMessage onChanId dst) ->
+             runSysCall (routeMessage onChanId dst) a st >>= kernelize a
+         SysCallInterrupt (ReplyToMessage onChanId) ->
+             runSysCall (replyToMessage onChanId) a st >>= kernelize a
+         SysCallInterrupt (WaitOnChannels flags timeout retSenderPtr) ->
+             runSysCall (waitOnChannels flags timeout retSenderPtr) a st >>= kernelize a
+         SysCallInterrupt (UnmaskChannel chanId) ->
+             runSysCall (unmaskChannel chanId) a st >>= kernelize a
          SysCallInterrupt (KillTask taskId) ->
              runSysCall (killTask taskId) a st >>= kernelize a
          SysCallInterrupt CurrentTask ->
@@ -149,12 +166,21 @@ kernelize a st =
                  archDebugLog a ("Got back from userspace because of a " ++ show rsn ++ " at " ++ showHex rip "")
 
 runSysCall :: (SysCallReturnable a, Registers r, Show e, Show r, Show v) => SysCallM r v e a -> Arch r v e -> HosState r v e -> IO (HosState r v e)
-runSysCall sc a st = do res <- runSysCallM sc a st
+runSysCall sc a st = do let curTaskId = hscCurrentTask (hosSchedule st)
+                        res <- runSysCallM sc a st
                         case res of
                           Error e -> archReturnToUserspace a (fromSysCallReturnable e) >>
                                      return st
-                          Success (x, st') -> archReturnToUserspace a (fromSysCallReturnable x) >>
-                                              return st'
+                          Success (x, st') ->
+                              let curTaskId' = hscCurrentTask (hosSchedule st)
+                              in if curTaskId' == curTaskId
+                                   then archReturnToUserspace a (fromSysCallReturnable x) >>
+                                        return st'
+                                   -- If we switched tasks, then return nothing, because we would be returning to the wrong task
+                                   --
+                                   -- This works because the only system calls that switch tasks(yield, killtask and waitonchannels)
+                                   -- all have other mechanisms to return to the calling process, or return nothing at all.
+                                   else return st'
 
 debugLog :: Ptr Word8 -> Int -> SysCallM r v e ()
 debugLog p sLength =
@@ -165,18 +191,20 @@ debugLog p sLength =
        s <- liftIO (readCString p sLength)
        x `seq` scDebugLog ("[User] " ++ s)
 
-currentAddressSpace :: TaskId -> SysCallM r v e ()
+currentAddressSpace :: TaskId -> SysCallM r v e AddressSpaceRef
 currentAddressSpace taskId =
     do Task { taskAddressSpace = addrSpace } <- getTask taskId
        curTask <- getCurrentTask
        let newAddressSpaceRef = nextRef AddressSpaceRef unAddressSpaceRef (taskAddressSpaces curTask)
-       setCurrentTask (curTask { taskAddressSpaces = M.insert newAddressSpaceRef addrSpace (taskAddressSpaces curTask) })
+       x <- setCurrentTask (curTask { taskAddressSpaces = M.insert newAddressSpaceRef addrSpace (taskAddressSpaces curTask) })
+       x `seq` return newAddressSpaceRef
 
-emptyAddressSpace :: SysCallM r v e ()
+emptyAddressSpace :: SysCallM r v e AddressSpaceRef
 emptyAddressSpace =
     do curTask <- getCurrentTask
        let newAddressSpaceRef = nextRef AddressSpaceRef unAddressSpaceRef (taskAddressSpaces curTask)
-       setCurrentTask (curTask { taskAddressSpaces = M.insert newAddressSpaceRef baseAddressSpace (taskAddressSpaces curTask) })
+       x <- setCurrentTask (curTask { taskAddressSpaces = M.insert newAddressSpaceRef baseAddressSpace (taskAddressSpaces curTask) })
+       x `seq` return newAddressSpaceRef
 
 enterAddressSpace :: Registers r => AddressSpaceRef -> Word64 -> SysCallM r v e ()
 enterAddressSpace aRef entry =
@@ -195,10 +223,22 @@ enterAddressSpace aRef entry =
 addMapping :: AddressSpaceRef -> AddressRange -> Mapping -> SysCallM r v e ()
 addMapping addrSpaceRef (AR start end) mapping =
     do curTask <- getCurrentTask
-       addrSpace <- getAddressSpace curTask addrSpaceRef
-       let addrSpace' = addrSpaceWithMapping start end mapping addrSpace
-           curTask' = taskWithModifiedAddressSpace addrSpaceRef addrSpace' curTask
-       setCurrentTask curTask'
+       arch <- getArch
+       mapping' <- case mapping of
+                     Message msgType _ ->
+                         let pageAlignedSz = alignToPage arch (end - start + fromIntegral (archPageSize arch) - 1)
+                             pageCount = fromIntegral (pageAlignedSz `div` fromIntegral (archPageSize arch))
+                         in return (Message msgType (Seq.fromList (replicate pageCount Nothing)))
+
+                     _ -> return mapping
+       if addrSpaceRef == curAddressSpaceRef
+         then let curTask' = curTask { taskAddressSpace = addrSpaceWithMapping start end mapping' (taskAddressSpace curTask) }
+              in setCurrentTask curTask'
+         else do
+           addrSpace <- getAddressSpace curTask addrSpaceRef
+           let addrSpace' = addrSpaceWithMapping start end mapping' addrSpace
+               curTask' = taskWithModifiedAddressSpace addrSpaceRef addrSpace' curTask
+           setCurrentTask curTask'
 
 switchToAddressSpace :: TaskId -> AddressSpaceRef -> SysCallM r v e ()
 switchToAddressSpace taskId addrSpaceRef =
@@ -221,32 +261,36 @@ killTask taskId = ensuringPrivileges (canKillP taskId) $
                      x `seq` deleteTask taskId
 
 yieldSc :: SysCallM r v e ()
-yieldSc = do curPrio <- getCurrentTaskPriority
-             curTaskId <- getCurrentTaskId
-             x1 <- scheduleTask curPrio curTaskId -- make sure we run next time!
-             curTask' <- switchToNextTask
-             x1 `seq` setTask curTaskId curTask'
+yieldSc = do st <- getHosState
+             if null (hscUpcomingTasks (hosSchedule st)) && null (hscScheduledTasks (hosSchedule st))
+                then return ()
+                else do curPrio <- getCurrentTaskPriority
+                        curTaskId <- getCurrentTaskId
+                        curTask' <- switchToNextTask
+                        x1 <- scheduleTask curPrio curTaskId -- make sure we run next time!
+                        x1 `seq` setTask curTaskId curTask'
 
 forkSc :: Show v => SysCallM r v e TaskId
 forkSc = do curTask <- getCurrentTask
             curTaskId <- getCurrentTaskId
             a <- getArch
-            (curTask'', childTask) <- liftIO $ do curTask' <- archSwitchTasks a curTask curTask
-                                                  taskFork a curTask'
-            childTask' <- liftIO $ do
-                            t1 <- archSwitchTasks a curTask childTask
-                            () <- archReturnToUserspace a (fromSysCallReturnable (TaskId 0))
-                            newChildTask <- archSwitchTasks a childTask curTask''
-                            t1 `seq` return newChildTask
+            (curTask', childTask') <-
+                liftIO $ do
+                  curTask' <- archSwitchTasks a curTask curTask
+                  (newCurTask, newChildTask) <- taskFork a curTask'
+                  t <- archSwitchTasks a curTask newChildTask
+                  t1 <- archReturnToUserspace a (fromSysCallReturnable (TaskId 0))
+                  newChildTask <- archSwitchTasks a newChildTask newCurTask
+                  t `seq` t1 `seq` return (newCurTask, newChildTask)
 
             childId <- newTaskId
 
-            let (parentPrivileges, childPrivileges) = forkPrivileges (taskPrivileges curTask'') curTaskId childId
+            let (parentPrivileges, childPrivileges) = forkPrivileges (taskPrivileges curTask') curTaskId childId
                 childTask'' = childTask' { taskPrivileges = childPrivileges }
-                curTask''' = curTask'' { taskPrivileges = parentPrivileges }
+                curTask'' = curTask' { taskPrivileges = parentPrivileges }
 
             x1 <- setTask childId childTask''
-            x2 <- setCurrentTask curTask'''
+            x2 <- setCurrentTask curTask''
 
             curPrio <- getCurrentTaskPriority
             x3 <- scheduleTask curPrio childId

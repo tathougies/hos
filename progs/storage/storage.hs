@@ -1,6 +1,9 @@
 module Main where
 
 import Hos.User.SysCall
+import Hos.User.IPC
+import Hos.Init.Msg
+import Hos.Storage.Msg
 import Hos.Common.Bundle
 import Hos.Common.Types
 
@@ -13,6 +16,7 @@ import Data.List
 import Data.Elf
 
 import Foreign.Ptr
+import Foreign.Storable
 
 import Numeric
 
@@ -22,11 +26,17 @@ pageSize :: Word64
 pageSize = 0x1000
 
 main :: IO ()
-main = do hosDebugLog "[storage] starting..."
+main = do hosDebugLog "[storage] registering as 'hos.storage'..."
+          initResponse <- transmitMsg (ChanId 0) (ServerName "hos.init") (ChanId 0) (InitRegisterProvider "hos.storage")
+--          forever $ return ()
+          case initResponse of
+            Right InitSuccess -> hosDebugLog "[storage] successfully registered!"
+            Right resp -> hosDebugLog ("[storage] init gave error: " ++ show resp)
+            Left (CouldNotParseResponse err) -> hosDebugLog ("[storage] could not decode response: "++ err)
           modCount <- hosModuleCount
           if modCount < 3
              then hosDebugLog "[storage] [FATAL] no boot bundle found"
-             else loadBootBundle
+             else do loadBootBundle
 
 alignToPage :: Word64 -> Word64
 alignToPage a = a .&. complement (pageSize - 1)
@@ -84,3 +94,42 @@ loadBootBundle =
                          let serviceName = autobootServiceName item
                              (offset, size) = biLocation item
                          in loadElf serviceName (wordToPtr (modOffsetPtr + offset)) (physModOffsetPtr + offset) size
+                     -- Now we're going to wait and listen for messages on (ChanId 0)
+                     hosDebugLog "[storage] listening..."
+                     forever $ serveBundle modOffsetPtr physModOffsetPtr bundle
+
+serveBundle :: Word64 -> Word64 -> Bundle (Word64, Word64) -> IO ()
+serveBundle modOffsetPtr physModOffsetPtr bundle =
+    do x <- hosAddMappingToCurTask 0x10000002000 0x10000003000 (Message (Incoming (MessageFrom (ChanId 0))) undefined)
+       let msgPtr = wordToPtr 0x10000002000
+           replyPtr = wordToPtr 0x10000003000
+       hosUnmaskChannel (ChanId 0)
+--       hosUnmaskChannel (ChanId 0xBADBEEF)
+       hosWaitOnChannels waitForever 100
+       msg <- getRoutedMsg "hos.storage" msgPtr 0x1000
+       case msg of
+         Right (OurMsg msg) ->
+             case msg of
+               StoragePerformQuery _ (TagIs (TagName name) value) ->
+                   do hosAddMappingToCurTask 0x10000003000 0x10000004000 (Message (Outgoing (ReplyTo (ChanId 0))) undefined)
+                      let matchesTag = hasTag name (== value)
+                      case filter (matchesTag . snd) (zip [0..] (bundleContents bundle)) of
+                        (i, _):_ -> do serializeTo replyPtr 0x1000 (StorageQueryResult (ObId i))
+                                       hosReplyTo (ChanId 0)
+                                       return ()
+                        _ -> do serializeTo replyPtr 0x1000 (StorageQueryDone)
+                                hosReplyTo (ChanId 0)
+                                return ()
+               StorageExecute (ObId obId) args ->
+                   do let (offset, size) = biLocation (bundleContents bundle !! (fromIntegral obId))
+                      hosAddMappingToCurTask 0x10000003000 0x10000004000 (Message (Outgoing (ReplyTo (ChanId 0))) undefined)
+                      childId <- loadElf (show obId) (wordToPtr (modOffsetPtr + offset)) (physModOffsetPtr + offset) size
+                      serializeTo replyPtr 0x1000 (StorageStartedTask childId)
+                      hosReplyTo (ChanId 0)
+
+                      -- Now send the arguments to the child
+                      initSendArgs childId args
+                      return ()
+               _ -> hosDebugLog "[storage] got unrecognized message"
+         Left err -> hosDebugLog ("[storage] error decoding: " ++ show err)
+         Right _ -> hosDebugLog "[storage] got message that was not for us.."

@@ -1,6 +1,8 @@
 {-# LANGUAGE BangPatterns, CPP #-}
 module Data.Binary where
 
+import Hos.Common.Types
+
 import Control.Applicative
 import Control.Exception (bracket)
 import Control.Monad
@@ -16,13 +18,8 @@ import Foreign.Storable
 import Foreign.Marshal
 import Foreign.Ptr
 
-#ifndef __GLASGOW_HASKELL__
-(<>) :: Monoid a => a -> a -> a
-(<>) = mappend
-#endif
-
 -- | A builder is a function that takes a pointer and writes a certain number of bytes to that location
-data Builder = Builder (Ptr () -> IO ()) !Int
+data Builder = Builder (Ptr () -> IO ()) !Word64
 newtype Get a = Get { doGet :: Ptr () -> Word64 -> IO (Either String (a, Ptr (), Word64)) }
 
 instance Monoid Builder where
@@ -30,10 +27,10 @@ instance Monoid Builder where
     mappend (Builder a aSz) (Builder b bSz) =
         Builder ab (aSz + bSz)
         where ab ptr = do a ptr
-                          b (ptr `plusPtr` aSz)
+                          b (ptr `plusPtr` fromIntegral aSz)
 
 storableB :: Storable a => a -> Builder
-storableB w = Builder (\p -> poke (castPtr p) w) (sizeOf w)
+storableB w = Builder (\p -> poke (castPtr p) w) (fromIntegral (sizeOf w))
 
 word8B :: Word8 -> Builder
 word8B = storableB
@@ -60,12 +57,17 @@ class Binary a where
     put :: a -> Builder
     get :: Get a
 
-withSerialized :: Binary a => a -> (Ptr () -> Int -> IO b) -> IO b
+withSerialized :: Binary a => a -> (Ptr () -> Word64 -> IO b) -> IO b
 withSerialized a cont =
     let Builder mkA aSz = put a
-    in bracket (mallocBytes aSz) free $ \p ->
+    in bracket (mallocBytes (fromIntegral aSz)) free $ \p ->
         do mkA p
            cont p aSz
+
+serializeTo :: Binary a => Ptr () -> Word64 -> a -> IO ()
+serializeTo p sz a =
+    let Builder putA aSz = put a
+    in if aSz > sz then fail "need more space" else putA p
 
 instance (Binary a, Binary b) => Binary (a, b) where
     put (a, b) = put a <> put b
@@ -143,3 +145,8 @@ gFail x = Get $ \_ _ -> return (Left x)
 --     f <*> x = do f' <- f
 --                  x' <- x
 --                  return (f' x')
+getFrom :: Binary a => Ptr () -> Word64 -> IO (Either String a)
+getFrom p sz = doGet get p sz >>= \res ->
+               case res of
+                 Left err -> return (Left err)
+                 Right (a, _, _) -> return (Right a)

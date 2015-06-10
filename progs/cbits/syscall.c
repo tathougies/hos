@@ -10,7 +10,7 @@ addr_space_t hos_current_address_space(task_id_t tId)
   return syscall(HOS_CURRENT_ADDRESS_SPACE, tId, 0, 0, 0, 0);
 }
 
-hos_status_t hos_add_mapping(addr_space_t aRef, uintptr_t vStart, uintptr_t vEnd, mem_mapping_t *mapping)
+hos_status_t hos_add_mapping(uint64_t aRef, uintptr_t vStart, uintptr_t vEnd, mem_mapping_t *mapping)
 {
   return syscall(HOS_ADD_MAPPING, aRef, vStart, vEnd, (hos_word_t)mapping, 0);
 }
@@ -27,7 +27,9 @@ void hos_close_address_space(addr_space_t aRef)
 
 void hos_debug_log(const char *ptr)
 {
-  syscall(HOS_DEBUG_LOG, (hos_word_t) ptr, 0, 0, 0, 0);
+  uint64_t sLen = 0;
+  for(;ptr[sLen] != '\0'; sLen++);
+  syscall(HOS_DEBUG_LOG, (hos_word_t) ptr, sLen, 0, 0, 0);
 }
 
 #define NIBBLE(x, i) hexChars[((x) >> i) & 0xf]

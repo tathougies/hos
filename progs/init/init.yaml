@@ -1,0 +1,10 @@
+name: init
+version: 0.0.1
+exposed-modules:
+  - Hos.Init.Msg
+build-depends:
+  - applicative
+  - hos-common
+  - hos
+include:
+  - ../cbits

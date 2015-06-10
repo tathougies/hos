@@ -3,6 +3,7 @@ version: 0.0.1
 exposed-modules:
   - Hos.User.SysCall
   - Hos.User.IO
+  - Hos.User.IPC
 build-depends:
   - applicative
   - hos-common

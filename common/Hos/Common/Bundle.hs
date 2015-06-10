@@ -1,5 +1,7 @@
 module Hos.Common.Bundle where
 
+import Hos.Common.Types
+
 import Control.Applicative
 
 import Data.Word

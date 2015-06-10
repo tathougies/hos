@@ -12,7 +12,7 @@ import Control.Monad
 import Data.Functor
 import Data.Char
 import Data.Word
-import qualified Data.Map.Base as M
+import qualified Data.Map as M
 
 import Foreign.Ptr
 import Foreign.Storable
@@ -136,6 +136,7 @@ scheduleTask prio task = do st <- getHosState
 
 switchToNextTask :: SysCallM r v e (Task r v)
 switchToNextTask = do st <- getHosState
+                      arch <- getArch
                       case hscScheduledTasks (hosSchedule st) of
                         [] -> case hscUpcomingTasks (hosSchedule st) of
                                 [] -> fail "No more tasks..."
@@ -147,11 +148,26 @@ switchToNextTask = do st <- getHosState
                                curTask <- getCurrentTask
                                case M.lookup newTaskId (hosTasks st) of
                                  Nothing -> fail ("couldn't find task: " ++ show newTaskId)
-                                 Just newTask ->
-                                     do arch <- getArch
-                                        curTask' <- liftIO $ archSwitchTasks arch curTask newTask
-                                        x <- setHosState st'
-                                        x `seq` return curTask'
+                                 Just newTask
+                                     | newTaskId == hscCurrentTask (hosSchedule st) ->
+                                         do curTask' <- liftIO $ do curTask' <- archSwitchTasks arch curTask curTask
+                                                                    archSwitchTasks arch curTask curTask'
+                                                                    return curTask'
+                                            x <- setHosState st'
+                                            x `seq` return curTask'
+                                     | otherwise ->
+                                         do curTask' <- liftIO $ archSwitchTasks arch curTask newTask
+                                            x <- setHosState st'
+                                            x `seq` return curTask'
+
+-- | Removes task from schedule, but does not switch out of the task if we're currently in it
+suspendTask :: TaskId -> SysCallM r v e ()
+suspendTask taskId = do st <- getHosState
+                        let schedule' = (hosSchedule st) { hscUpcomingTasks = upcomingTasks'
+                                                         , hscScheduledTasks = scheduledTasks' }
+                            upcomingTasks' = filter (\(_, taskId') -> taskId /= taskId') (hscUpcomingTasks (hosSchedule st))
+                            scheduledTasks' = filter (\(_, taskId') -> taskId /= taskId') (hscScheduledTasks (hosSchedule st))
+                        setHosState (st { hosSchedule = schedule' })
 
 ensurePtr :: Ptr a -> ReadWrite -> SysCallM r v e ()
 ensurePtr p rw = do a <- getArch
@@ -163,7 +179,8 @@ ensurePtr p rw = do a <- getArch
                                                      ReadWrite -> FaultOnWrite
                                   res <- liftIO (handleFaultAt a faultCause (ptrToWord p) curTask)
                                   case res of
-                                    Left err -> do x <- scDebugLog "Bad ptr"
+                                    Left err -> do taskId <- getCurrentTaskId
+                                                   x <- scDebugLog ("Bad ptr " ++ show taskId ++ " at " ++ showHex (ptrToWord p) (": " ++ show (taskAddressSpace curTask)))
                                                    x `seq` liftIO cHalt
                                     Right curTask' -> setCurrentTask curTask'
                       _ -> return ()

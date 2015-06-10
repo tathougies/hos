@@ -13,10 +13,14 @@ module Hos.Types
     , Task(..), TaskDescriptor(..)
     , invalidAddressSpaceRef, unAddressSpaceRef, nextRef
     , fullAddressSpace, baseAddressSpace
+    , addrSpaceRegions
 
     -- * System calls
     , SysCall(..), SysCallResult(..), SysCallError(..)
     , SysCallReturnable(..)
+
+    -- * IPC
+    , MessageInDelivery(..), MessageEndpoint(..), PleaseWakeUp(..)
 
     -- * Scheduling
     , InterruptReason(..), HosSchedule(..), emptySchedule
@@ -26,7 +30,7 @@ module Hos.Types
     , HosState(..)
 
     -- * Utilities
-    , (<>), withPtr, alignToPage, hosPanic, jhcWorkaround, readOnlyPerms )
+    , (<>),  withPtr, alignToPage, hosPanic, jhcWorkaround, readOnlyPerms )
     where
 
 import Hos.CBits
@@ -37,20 +41,26 @@ import Control.Applicative
 import Data.Monoid
 import Data.Bits
 import Data.Word
+import Data.List (intersperse)
 import Data.Set (Set)
-import Data.Map.Base (Map)
+import Data.Sequence (Seq)
+import Data.Map (Map)
 import Data.IntervalMap (IntervalMap)
 import qualified Data.IntervalMap as IntervalMap
-import qualified Data.Map.Base as M
+import qualified Data.Map as M
 import qualified Data.Set as S
+import qualified Data.Array as A
 --import Data.PQueue.Prio.Min (MinPQueue)
 
 import Foreign.Ptr
 import Foreign.Storable
 
+import Numeric
+
 type StackSize = Word64
 newtype StackPtr = StackPtr { unStackPtr :: Word64}
 newtype InstructionPtr = InstructionPtr { unInstructionPtr :: Word64 }
+newtype PhysAddr = PhysAddr { paToWord64 :: Word64 } deriving (Show, Eq, Ord)
 
 data VMFaultCause = FaultOnRead
                   | FaultOnWrite
@@ -69,10 +79,6 @@ data CPUException archE = ArchException archE
                         | ProtectionException
                         | UnknownException
                           deriving (Show, Read, Eq, Ord)
-
-(<>) :: Monoid a => a -> a -> a
-a <> b = mappend a b
-infixr 6 <>
 
 data StackDirection = StackGrowsUp
                     | StackGrowsDown
@@ -113,7 +119,7 @@ data Arch regs vMemTbl archE =
 
     , archDebugLog :: String -> IO () }
 
-type AddressSpace = IntervalMap Word64 Mapping
+newtype AddressSpace = AddressSpace (IntervalMap Word64 Mapping)
 
 data TaskReasonLeft = SysCall | Trap | IRQ
                     deriving (Show, Read, Eq, Ord, Enum)
@@ -133,10 +139,12 @@ data AddressRange = AR Word64 Word64
                     deriving (Show, Eq, Ord)
 
 data FaultError = UnknownMapping
+                | NoMessageInMapping
                   deriving (Show, Read, Eq, Ord)
 
-data SysCall = DebugLog (Ptr Word8) Int
+data SysCall = DebugLog (Ptr Word8) Int -- special code 0x0
 
+             -- Address space management (section 0)
              | EmptyAddressSpace
              | CurrentAddressSpace TaskId
              | AddMapping AddressSpaceRef AddressRange Mapping
@@ -145,14 +153,12 @@ data SysCall = DebugLog (Ptr Word8) Int
              | SwitchToAddressSpace TaskId AddressSpaceRef
              | EnterAddressSpace AddressSpaceRef Word64
 
-             | AllocateRegion Word64
-             | FreeRegion Word64 Word64
-
-             | GrantPrivilege TaskId Privileges
-             | RevokePrivilege TaskId Privileges
-
-             | ReplaceTaskAddressSpace TaskId AddressSpaceRef
-             | TaskAddressSpaceRef TaskId
+               -- IPC (section 1)
+             | DeliverMessage ChanId MessageEndpoint
+             | RouteMessage ChanId MessageEndpoint
+             | ReplyToMessage ChanId
+             | WaitOnChannels WaitOnChannelsFlags Word64 (Ptr TaskId)
+             | UnmaskChannel ChanId
 
                -- Input/output (section 3)
              | RequestIO
@@ -162,6 +168,8 @@ data SysCall = DebugLog (Ptr Word8) Int
              | CurrentTask
              | Fork
              | Yield
+             | GrantPrivilege TaskId Privileges
+             | RevokePrivilege TaskId Privileges
 
                -- boot modules (section 0xFF)
              | ModuleCount
@@ -169,6 +177,19 @@ data SysCall = DebugLog (Ptr Word8) Int
 
              | MalformedSyscall Word16
                deriving Show
+
+data MessageEndpoint = MessageEndpoint !TaskId !ChanId
+                       deriving Show
+
+data MessageInDelivery = MessageInDelivery
+                       { midSource      :: !MessageEndpoint
+                       , midDestination :: !MessageEndpoint
+                       , midPages       :: Seq (Maybe Word64) }
+                         deriving Show
+
+data PleaseWakeUp = NoThanks
+                  | FromWaitOnChannels WaitOnChannelsFlags (Ptr TaskId) TaskPriority
+                    deriving Show
 
 data Task archRegisters archVirtMemTbl =
     Task
@@ -179,13 +200,24 @@ data Task archRegisters archVirtMemTbl =
 
     , taskPrivileges     :: Privileges
 
+    , taskOutgoingMessages :: Map ChanId MessageInDelivery
+    , taskIncomingMessages :: Map ChanId (Seq MessageInDelivery)
+
+    -- | Messages that have been received through a WaitOnChannel but which have not been replied to. Enables RouteMessage
+    , taskInProcessMessages :: Map ChanId MessageInDelivery
+    , taskUnmaskedChannels :: Set ChanId
+
+    , taskPleaseWakeUp :: PleaseWakeUp
+
+    -- | The router is the task that receives any message sent to TaskId 0. This allows processes to intercept messages, and allows the creation of things like emulatory servers
+    , taskRouter         :: TaskId
+
     , taskAddressSpaces  :: Map AddressSpaceRef AddressSpace }
     deriving Show
 
 data TaskDescriptor = TaskDescriptor
                     { tdStackSize    :: StackSize
                     , tdAddressSpace :: AddressSpace }
-
 
 -- | A type that amounts to a zipper over the priority queue of tasks
 data HosSchedule = HosSchedule
@@ -212,6 +244,12 @@ data SysCallResult a = Success a
 data SysCallError = NoSuchAddressSpace
                   | NoSuchTask
                   | InsufficientPrivileges
+
+                  | SourceChanIsFull
+                  | DestChanIsFull
+                  | ChannelIsEmpty
+                  | WouldBeTruncated
+                  | NoMessagesAvailable
                     deriving Show
 
 class Registers regs where
@@ -271,6 +309,13 @@ instance SysCallReturnable SysCallError where
     fromSysCallReturnable NoSuchAddressSpace = maxBound - 1
     fromSysCallReturnable NoSuchTask = maxBound - 2
 
+    fromSysCallReturnable SourceChanIsFull = maxBound - 3
+    fromSysCallReturnable DestChanIsFull = maxBound - 4
+    fromSysCallReturnable ChannelIsEmpty = maxBound - 5
+
+    fromSysCallReturnable WouldBeTruncated = 0x100000000 .|. 0x10300
+    fromSysCallReturnable NoMessagesAvailable = 0x100000000 .|. 0x10301
+
 instance SysCallReturnable () where
     fromSysCallReturnable () = 0
 
@@ -281,7 +326,7 @@ fullAddressSpace :: AddressRange
 fullAddressSpace = AR minBound maxBound
 
 baseAddressSpace :: AddressSpace
-baseAddressSpace = IntervalMap.empty
+baseAddressSpace = AddressSpace IntervalMap.empty
 
 -- sometimes, JHC doesn't like invoking monadic actions whose values are ignored
 -- this works around that
@@ -292,3 +337,11 @@ readOnlyPerms :: MemoryPermissions -> MemoryPermissions
 readOnlyPerms (Privileged ReadWrite) = Privileged ReadOnly
 readOnlyPerms (UserSpace ReadWrite) = UserSpace ReadOnly
 readOnlyPerms x = x
+
+instance Show AddressSpace where
+    show (AddressSpace i) = concat (intersperse "\n" (map showRegion (IntervalMap.assocs i)))
+        where showRegion ((start, end), mapping) =
+                  showHex start (" - " ++ showHex end (": " ++ show mapping))
+
+addrSpaceRegions :: AddressSpace -> [((Word64, Word64), Mapping)]
+addrSpaceRegions (AddressSpace i) = IntervalMap.assocs i

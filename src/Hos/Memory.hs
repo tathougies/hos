@@ -32,11 +32,11 @@ memcpy !dst !src sz = peek (castPtr src :: Ptr Word8) >>= poke (castPtr dst) >>
                       memcpy (dst `plusPtr` 1) (src `plusPtr` 1) (sz - 1)
 
 addrSpaceWithMapping :: Word64 -> Word64 -> Mapping -> AddressSpace -> AddressSpace
-addrSpaceWithMapping start end = IntervalMap.insert (start, end)
+addrSpaceWithMapping start end mapping (AddressSpace aSpace) = AddressSpace $ IntervalMap.insert (start, end) mapping aSpace
 
 releaseAddressSpace :: Arch r v e -> AddressSpace -> v -> IO ()
 releaseAddressSpace arch aSpace virtMemTbl =
-    do let regions = IntervalMap.assocs aSpace
+    do let regions = addrSpaceRegions aSpace
        forM_ regions $ \((start, end), mapping) ->
            case mapping of
              Mapped _ physBase ->

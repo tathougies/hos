@@ -30,12 +30,15 @@ forkPrivileges :: Privileges -> TaskId -> TaskId -> (Privileges, Privileges)
 forkPrivileges p parentId childId =
     forkReplaceAddressSpaces (p, p)
     where forkReplaceAddressSpaces (parent, child) =
-              ( parent { canReplaceAddressSpaces = S.insert childId (canReplaceAddressSpaces parent) }
+              ( parent { canReplaceAddressSpaces = S.insert childId (canReplaceAddressSpaces parent)
+                       , canKill = S.insert childId (canKill parent)}
               , if parentId `S.member` canReplaceAddressSpaces p
                    then child { canReplaceAddressSpaces = S.insert childId .
                                                           S.delete parentId .
-                                                           canReplaceAddressSpaces $ child }
-                   else child { canReplaceAddressSpaces = S.delete parentId (canReplaceAddressSpaces child) } )
+                                                           canReplaceAddressSpaces $ child
+                              , canKill = S.singleton childId }
+                   else child { canReplaceAddressSpaces = S.delete parentId (canReplaceAddressSpaces child)
+                              , canKill = S.singleton childId } )
 
 -- There is a strict ordering on privilege sets. A privilege set A is
 -- less than or equal to a privilege set B if every privilege in A is

@@ -42,13 +42,13 @@ validateBundle :: [TagDescriptor] -> Bundle l -> ValidationResult l
 validateBundle tagDescs items = ValidBundle tagDescs items
 
 embedFile :: Handle -> FilePath -> Word64 -> IO ()
-embedFile fh fileToEmbed fileSz =
+embedFile fh fileToEmbed alignedFileSz =
     do embedH <- openBinaryFile fileToEmbed ReadMode
-       let copyBytes = do isEof <- hIsEOF embedH
-                          if isEof then return () else hGetChar embedH >>= hPutChar fh >> copyBytes
-       copyBytes
+       let copyBytes n = do isEof <- hIsEOF embedH
+                            if isEof then return n else hGetChar embedH >>= hPutChar fh >> copyBytes (n + 1)
+       bytesCopied <- copyBytes 0
        hClose embedH
-       replicateM_ (fromIntegral (alignToPage fileSz - fileSz)) (hPutChar fh '\0')
+       replicateM_ (fromIntegral (alignedFileSz - bytesCopied)) (hPutChar fh '\0')
 
 getFileSize :: FilePath -> IO Word64
 getFileSize fp = bracket (openBinaryFile fp ReadMode) hClose $ \h -> fromIntegral <$> hFileSize h
@@ -67,9 +67,9 @@ main = getArgs >>= \args ->
                   ValidBundle tags bundle ->
                       do fh <- openBinaryFile outputFileName WriteMode
                          headerLen <- withSerialized (tags, bundle) $ \ptr length ->
-                                      do hPutBuf fh ptr length
+                                      do hPutBuf fh ptr (fromIntegral length)
                                          return length
-                         replicateM_ (alignToPage headerLen - headerLen) (hPutChar fh '\0')
+                         replicateM_ (fromIntegral (alignToPage headerLen - headerLen)) (hPutChar fh '\0')
                          -- Now we're aligned to a page boundary, so now just copy each file in
                          forM_ (zip (bundleContents fileBundle) fileSizes) $ \(BundleItem { biLocation = fileName }, fileSz) ->
                              embedFile fh fileName fileSz

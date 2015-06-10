@@ -17,9 +17,15 @@ data PciDevice = PciDevice
                , pciDevBars      :: [PciBar] }
                  deriving Show
 
-data PciBar = PciBar
-            { pciBarBase :: !Word32
-            , pciBarSize :: !Word32 }
+data PciBar = PciBarMemory
+            { pciBarBase :: !Word64
+            , pciBarSize :: !Word64 }
+            | PciBarIO
+            { pciBarIOBase :: !Word32
+            , pciBarIOSize :: !Word32 }
+            | PciBarPleaseAllocateIO Word32
+            | PciBarPleaseAllocateMem32 Word32
+            | PciBarPleaseAllocateMem64 Word64
               deriving Show
 
 data PciSlot = PciSlot
@@ -41,7 +47,9 @@ data PciProbeResult = NoDeviceInSlot
 data PciIO = PciIO
            { pciRead8 :: PciSlot -> Word8 -> IO Word8
            , pciRead16 :: PciSlot -> Word8 -> IO Word16
-           , pciRead32 :: PciSlot -> Word8 -> IO Word32 }
+           , pciRead32 :: PciSlot -> Word8 -> IO Word32
+
+           , pciWrite32 :: PciSlot -> Word8 -> Word32 -> IO ()}
 
 -- PCI field indices
 pciVendorField, pciDeviceField, pciHeaderTypeField, pciSubVendorField, pciSubDeviceField, pciBaseClassField, pciSubClassField, pciInfClassField :: Word8
@@ -53,6 +61,14 @@ pciSubDeviceField = 0x2E
 pciBaseClassField = 0xB
 pciSubClassField = 0xA
 pciInfClassField = 0x9
+
+pciBar0Field, pciBar1Field, pciBar2Field, pciBar3Field, pciBar4Field, pciBar5Field :: Word8
+pciBar0Field = 0x10
+pciBar1Field = 0x14
+pciBar2Field = 0x18
+pciBar3Field = 0x1C
+pciBar4Field = 0x20
+pciBar5Field = 0x24
 
 probingStatus :: PciStatus
 probingStatus = PciStatus True True True False

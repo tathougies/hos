@@ -1,5 +1,11 @@
 module Main where
+
 import Hos.User.SysCall
+import Hos.User.IPC
+import Hos.Init.Msg
+import Hos.Storage.Msg
+import Hos.Common.Types
+import Hos.Common.Bundle
 
 import Hos.Dev.Pci.Arch
 import Hos.Dev.Pci.Types
@@ -51,8 +57,44 @@ pciDevName pciD =
 
       (base, sub, inf) -> "Other - " ++ showHex base (", " ++ showHex sub (", " ++ showHex inf ""))
 
+strDevId dev = let vendorIdS = showHex (pciDevVid dev) ""
+                   deviceIdS = showHex (pciDevDid dev) ""
+                   vendorIdS' = replicate (4 - length vendorIdS) '0' ++ vendorIdS
+                   deviceIdS' = replicate (4 - length deviceIdS) '0' ++ deviceIdS
+               in vendorIdS' ++ ":" ++ deviceIdS'
+
+pciBarEnv :: PciDevice -> [(String, String)]
+pciBarEnv dev = concat $ zipWith barEnv [0..] (pciDevBars dev)
+    where barEnv i (PciBarMemory base sz)
+              | base /= 0 || sz /= 0 = [("com.hos.dev.pci.bar." ++ show i, "m:" ++ show base ++ ":" ++ show sz)]
+          barEnv i (PciBarIO base sz)
+              | base /= 0 || sz /= 0 = [("com.hos.dev.pci.bar." ++ show i, "i:" ++ show base ++ ":" ++ show sz)]
+          barEnv _ _ = []
+
 main = do hosDebugLog "[pci] probing devices..."
+          initResponse <- transmitMsg (ChanId 0) (ServerName "hos.init") (ChanId 0) (InitRegisterProvider "hos.dev.pci")
+--          forever $ return ()
+          case initResponse of
+            Right InitSuccess -> hosDebugLog "[pci] successfully registered!"
+            Right resp -> hosDebugLog ("[pci] init gave error: " ++ show resp)
+            Left (CouldNotParseResponse err) -> hosDebugLog ("[pci] could not decode response: "++ err)
+          storageProvider <- initFindProvider (ServerName "hos.storage")
+          hosDebugLog ("Found provider " ++ show storageProvider)
           hosRequestIO
           devs <- probeMainBus archPciIO
           forM_ devs $ \dev ->
-              hosDebugLog ("[pci] Found: Vendor Id = " ++ showHex (pciDevVid dev) (", Device id = " ++ showHex (pciDevDid dev) (", " ++ pciDevName dev)))
+              do hosDebugLog ("[pci] Found: Vendor Id = " ++ showHex (pciDevVid dev) (", Device id = " ++ showHex (pciDevDid dev) (", " ++ pciDevName dev)))
+                 withStorageTransaction $
+                   do driver <- storageQuery (TagIs (TagName "com.hos.dev.pci.supported-device") (TextV (strDevId dev)))
+                      case driver of
+                        Nothing -> return ()
+                        Just obId -> do taskId <- storageExecute obId ([ ("com.hos.driver.type", "com.hos.dev.pci")
+                                                                       , ("com.hos.dev.pci.device", strDevId dev)
+                                                                       , ("com.hos.dev.pci.progIf", show (pciDevInfClass dev))
+                                                                       , ("com.hos.dev.pci.busInd", show (pciSlotBusInd (pciDevSlot dev)))
+                                                                       , ("com.hos.dev.pci.devInd", show (pciSlotDevInd (pciDevSlot dev)))
+                                                                       , ("com.hos.dev.pci.funcInd", show (pciSlotFuncInd (pciDevSlot dev))) ] ++
+                                                                       pciBarEnv dev)
+                                        case taskId of
+                                          Just _ -> return ()
+                                          Nothing -> hosDebugLog ("[pci] couldn't start driver...")

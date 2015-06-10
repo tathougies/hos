@@ -1,29 +1,92 @@
 module Main where
 
 import Hos.User.SysCall
+import Hos.User.IPC
+import Hos.Init.Msg
 import Hos.Common.Types
 
 import Control.Monad
 
 import Data.Word
 import Data.Elf
+import Data.Monoid
+import Data.Binary
+import qualified Data.Map as M
+
+import Foreign.Ptr
+import Foreign.Storable
 
 import Numeric
 
 main :: IO ()
-main = do childId <- hosFork
-          case childId of
-            0 -> doChild
-            _ -> doParent
+main =  do hosDebugLog ("[init] starting")
+           childId <- hosFork
+           case childId of
+             0 -> doChild
+             _ -> hosDebugLog "[init] starting routing layer..." >>
+                  -- Set up IPC structures
+                  hosAddMappingToCurTask 0x10000000000 0x10000001000 (Message (Incoming (MessageFrom (ChanId 0))) undefined) >>
+                  threadState doParent initialInitState
 
-doParent :: IO ()
-doParent = do hosDebugLog "Hello from the parent!"
-              hosYield
-              hosDebugLog "Hello parent 1"
-              hosYield
-              hosDebugLog "Hello parent 2"
-              hosYield
-              hosDebugLog "Hello parent 3"
+data InitState = InitState
+               { initServers :: M.Map String TaskId }
+
+initialInitState = InitState M.empty
+
+threadState :: (a -> IO a) -> a -> IO b
+threadState f a = do a' <- f a
+                     threadState f a'
+
+doParent :: InitState -> IO InitState
+doParent initState =
+    do res <- hosWaitOnChannels (waitForever <> allChannels) 0
+       case res of
+         Right (chanId, taskId) ->
+--           | chanId == 0 ->
+             do let msgPtr = wordToPtr 0x10000000000
+                    replyPtr = wordToPtr 0x10000001000
+                msg <- getRoutedMsg "hos.init" msgPtr 0x1000
+                case msg of
+                  Left err -> hosDebugLog ("[init] error decoding: " ++ show err) >> return initState
+                  Right (OurMsg msg) ->
+                      hosAddMappingToCurTask 0x10000001000 0x10000002000 (Message (Outgoing (ReplyTo (ChanId 0))) undefined) >>
+                      case msg of
+                        InitRegisterProvider serverName ->
+                            do serializeTo replyPtr 0x1000 InitSuccess
+                               hosReplyTo (ChanId 0)
+                               hosAddMappingToCurTask 0x10000000000 0x10000001000 (Message (Incoming (MessageFrom (ChanId 0))) undefined)
+                               return (initState { initServers = M.insert serverName taskId (initServers initState) })
+                        InitFindProvider serverName ->
+                            case M.lookup serverName (initServers initState) of
+                              Just serverId -> do serializeTo replyPtr 0x1000 (InitFoundProvider serverId)
+                                                  hosReplyTo (ChanId 0)
+                                                  hosAddMappingToCurTask 0x10000000000 0x10000001000 (Message (Incoming (MessageFrom (ChanId 0))) undefined)
+                                                  return initState
+                              Nothing -> do serializeTo replyPtr 0x1000 InitNotFound
+                                            hosReplyTo (ChanId 0)
+                                            hosAddMappingToCurTask 0x10000000000 0x10000001000 (Message (Incoming (MessageFrom (ChanId 0))) undefined)
+                                            return initState
+                        InitSendArgs tId args ->
+                            do serializeTo replyPtr 0x1000 InitSuccess
+                               hosReplyTo (ChanId 0)
+                               hosAddMappingToCurTask 0x10000000000 0x10000001000 (Message (Incoming (MessageFrom (ChanId 0))) undefined)
+
+                               hosAddMappingToCurTask 0x10000002000 0x10000003000 (Message (Outgoing (MessageFrom (ChanId 0xBADBEEF))) undefined)
+                               serializeTo (wordToPtr 0x10000002000) 0x1000 args
+                               hosDeliverMessage (ChanId 0xBADBEEF) tId (ChanId 0)
+                               return initState
+                  Right (InTransitMsg (ServerName name) chanId) ->
+                      case M.lookup name (initServers initState) of
+                        Nothing -> do serializeTo replyPtr 0x1000 InitNotFound
+                                      hosReplyTo (ChanId 0)
+                                      hosAddMappingToCurTask 0x10000000000 0x10000001000 (Message (Incoming (MessageFrom (ChanId 0))) undefined)
+                                      return initState
+                        Just serverId -> do hosRouteMsg (ChanId 0) serverId chanId
+                                            hosAddMappingToCurTask 0x10000000000 0x10000001000 (Message (Incoming (MessageFrom (ChanId 0))) undefined)
+                                            return initState
+--             | otherwise -> return initState
+         Left err -> hosDebugLog ("[init] wait on channels error: " ++ show err) >>
+                            return initState
 
 doChild :: IO ()
 doChild = do -- Now, we want to launch the second module given to us on the command line, which should be the storage server

@@ -65,7 +65,7 @@ typedef struct mem_mapping_t {
 
 task_id_t hos_current_task();
 addr_space_t hos_current_address_space(task_id_t taskId);
-hos_status_t hos_add_mapping(addr_space_t aRef, uintptr_t vStart, uintptr_t vEnd, mem_mapping_t *mapping);
+hos_status_t hos_add_mapping(uint64_t aRef, uintptr_t vStart, uintptr_t vEnd, mem_mapping_t *mapping);
 hos_status_t hos_switch_to_address_space(task_id_t tId, addr_space_t aRef);
 void hos_close_address_space(addr_space_t aRef);
 void hos_debug_log(const char *ptr);

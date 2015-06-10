@@ -17,7 +17,7 @@ XORRISO=$(CROSSCOMPILE_PREFIX)/bin/xorriso
 JHC=/Users/tathougies/Projects/jhc-0.8.2/jhc
 
 CFLAGS_COMMON=-D _JHC_GC=1 -D _JHC_DEBUG=0
-JHC_COMMON=-DTARGET=$(TARGET) -phos-containers -papplicative -L$(JHC_LIBS_PREFIX) -fforall
+JHC_COMMON=-DTARGET=$(TARGET) -pcontainers -papplicative -L$(JHC_LIBS_PREFIX) -fforall
 CFLAGS=-target x86_64-pc-elf $(CFLAGS_COMMON) -D TARGET=$(TARGET) -D KERNEL=1 -O2 -mcmodel=large
 CFLAGS_USER=-target x86_64-pc-elf $(CFLAGS_COMMON) -D TARGET=$(TARGET) -D HOS_USER=1 -O2
 TEST_CFLAGS=$(CFLAGS_COMMON) -D TARGET=$(HOST)

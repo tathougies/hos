@@ -27,7 +27,13 @@
 # room for a small temporary stack by creating a symbol at the bottom of it,
 # then allocating 16384 bytes for it, and finally creating a symbol at the top.
 .section .bootstrap_stack, "aw", @nobits
+stack_unmap:
+.global stack_unmap
+.align 4096
+.skip 4096 # This page will be unmapped
 stack_bottom:
+.global stack_bottom
+.skip 16384 # 16 KiB
 .skip 16384 # 16 KiB
 stack_top:
 .global stack_top
@@ -47,6 +53,8 @@ page_tables_base:
 .set IDENTITY_PDT, . - page_tables_base
 	.skip 0x1000
 .set IDENTITY_PT, . - page_tables_base
+	.skip 0x1000
+.set IDENTITY_PT2, . - page_tables_base
 	.skip 0x1000
 .set PAGE_TABLE_SZ, . - page_tables_base
 end_page_tables:
@@ -126,7 +134,6 @@ _start:
 	# Now we're in compatibility mode
 	mov $(page_tables_base_mb+GDT_POINTER_OFFS), %eax
 	lgdt (page_tables_base_mb + GDT_POINTER_OFFS)
-
 	pushl $codeS
 	pushl $longModeTrampoline_mb
 	lret
@@ -269,6 +276,9 @@ _setPageTableEntries:
 
 	mov $(page_tables_base_mb + IDENTITY_PDT), %eax
 	movl $(page_tables_base_mb + IDENTITY_PT + 3), (%eax)
+	# IDENTITY_PT2 maps the range 2-4MB. We need it because the kernel is greater than 1mb.
+	# It comes right after IDENTITY_PT, so our identity mapping loop just continues
+	movl $(page_tables_base_mb + IDENTITY_PT2 + 3), 0x8(%eax)
 
 	# Now, we need to map the entirety of kernel space into the 2 mb page table we have set up...
 	mov $(page_tables_base_mb + PT), %eax

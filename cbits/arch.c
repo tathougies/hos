@@ -108,6 +108,7 @@ void report_sse_panic()
   for(;;) asm("hlt");
 }
 
+extern int stack_unmap, stack_bottom;
 void report_kernel_panic(uint64_t trap, uint64_t err_code, uint64_t rip, uint64_t rflags)
 {
   klog("The kernel panicked on trap number ");
@@ -121,6 +122,9 @@ void report_kernel_panic(uint64_t trap, uint64_t err_code, uint64_t rip, uint64_
     asm("mov %%cr2, %%rax" : "=a"(access));
     klog(".\n The access was ");
     klog_hex(access);
+    if (access >= ((uintptr_t) &stack_unmap) && access < ((uintptr_t) &stack_bottom)) {
+      klog(". This means the access was a STACK OVERFLOW\n");
+    }
   }
 
   uint64_t *userspaceState = (uint64_t *)(((uintptr_t)&kernelState) + 8);

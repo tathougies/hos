@@ -5,6 +5,7 @@ kernel.bin
 kernel.elf
 hos.iso
 build/
+util/bin
 vendor/
 cd/
 .#*

@@ -30,12 +30,12 @@ void* sbrk(ptrdiff_t space_to_add)
   ptrdiff_t aligned_space_to_add = (space_to_add + EXEC_PAGESIZE - 1) & ~(EXEC_PAGESIZE - 1);
 
   if ( aligned_space_to_add > 0 ) {
-    task_id_t tId = hos_current_task();
-    addr_space_t aRef = hos_current_address_space(tId);
-    mem_mapping_t mapping = {MAP_ALLOCATE_ON_DEMAND, PERMS_USERSPACE_RW, 0};
-    hos_add_mapping(aRef, heap_end, heap_end + aligned_space_to_add, &mapping);
-    hos_switch_to_address_space(tId, aRef);
-    hos_close_address_space(aRef);
+    uint64_t curAddrSpaceRef = 0xffffffff;
+    mem_mapping_t mapping = {0, 0, 0};
+    mapping.mapping_type = MAP_ALLOCATE_ON_DEMAND;
+    mapping.perms = PERMS_USERSPACE_RW;
+    hos_add_mapping((uint64_t) curAddrSpaceRef, heap_end, heap_end + aligned_space_to_add, (mem_mapping_t *) &mapping);
+    //     for(;;);
     heap_end += aligned_space_to_add;
   }
   return (void *) (((uintptr_t) heap_end) - aligned_space_to_add);

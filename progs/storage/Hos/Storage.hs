@@ -13,7 +13,7 @@ import Foreign.Storable
 
 import Numeric
 
-loadElf :: String -> Ptr Elf64Hdr -> Word64 -> Word64 -> IO ()
+loadElf :: String -> Ptr Elf64Hdr -> Word64 -> Word64 -> IO TaskId
 loadElf name vStart physStart physSize =
     do (elfHdr, progHdrs) <- elf64ProgHdrs vStart
        aRef <- hosEmptyAddressSpace
@@ -23,8 +23,9 @@ loadElf name vStart physStart physSize =
              _ -> return 0
        r <- hosFork
        case r of
-         0 -> hosEnterAddressSpace aRef (e64Entry elfHdr)
-         childId -> do hosDebugLog ("[storage] started " ++ name ++ " as " ++ show childId)
-                       hosCloseAddressSpace aRef
+         0 -> hosEnterAddressSpace aRef (e64Entry elfHdr) >> return (TaskId 0)
+         childId -> do hosCloseAddressSpace aRef
+--                       hosDebugLog ("[storage] started " ++ name ++ " as " ++ show childId)
                        hosYield
+                       return (TaskId (fromIntegral childId))
 
