@@ -67,6 +67,8 @@ probeDeviceAndFunction pci slot =
                  subClass <- pciRead8 pci slot pciSubClassField
                  infClass <- pciRead8 pci slot pciInfClassField
 
+                 irq <- pciRead8 pci slot pciIrqField
+
                  headerType <- pciRead8 pci slot pciHeaderTypeField
                  case (headerType .&. 0x7f) of
                    0x0 -> do bar0 <- pciReadBar pci slot pciBar0Field
@@ -76,10 +78,10 @@ probeDeviceAndFunction pci slot =
                              bar4 <- pciReadBar pci slot pciBar4Field
                              bar5 <- pciReadBar pci slot pciBar5Field
                              return $ Right $
-                                      PciDevice slot baseClass subClass infClass vendorId deviceId subVendorId subDeviceId 0
+                                      PciDevice slot baseClass subClass infClass vendorId deviceId subVendorId subDeviceId irq
                                                 [bar0, bar1, bar2, bar3, bar4, bar5]
                    _ -> return $ Right $
-                        PciDevice slot baseClass subClass infClass vendorId deviceId subVendorId subDeviceId 0 []
+                        PciDevice slot baseClass subClass infClass vendorId deviceId subVendorId subDeviceId irq []
 
 probeDevice :: PciIO -> PciSlot -> [PciDevice] -> IO [PciDevice]
 probeDevice pci slot a = go

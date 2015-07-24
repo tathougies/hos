@@ -95,3 +95,6 @@ canReplaceAddressSpaceP taskId = mempty { canReplaceAddressSpaces = S.singleton 
 
 canRequestIOP :: Privileges
 canRequestIOP = mempty { canRequestIO = True }
+
+canGetPhysicalAddressP :: Privileges
+canGetPhysicalAddressP = mempty -- TODO make a permission for this...

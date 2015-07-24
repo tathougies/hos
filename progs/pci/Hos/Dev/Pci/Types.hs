@@ -12,7 +12,8 @@ data PciDevice = PciDevice
                , pciDevDid       :: !Word16
                , pciDevSubVid    :: !Word16
                , pciDevSubDid    :: !Word16
-               , pciDevIlr       :: !Word8
+
+               , pciDevIrq       :: !Word8
 
                , pciDevBars      :: [PciBar] }
                  deriving Show
@@ -52,7 +53,7 @@ data PciIO = PciIO
            , pciWrite32 :: PciSlot -> Word8 -> Word32 -> IO ()}
 
 -- PCI field indices
-pciVendorField, pciDeviceField, pciHeaderTypeField, pciSubVendorField, pciSubDeviceField, pciBaseClassField, pciSubClassField, pciInfClassField :: Word8
+pciVendorField, pciDeviceField, pciHeaderTypeField, pciSubVendorField, pciSubDeviceField, pciBaseClassField, pciSubClassField, pciInfClassField, pciIrqField :: Word8
 pciVendorField = 0x0
 pciDeviceField = 0x2
 pciHeaderTypeField = 0xE
@@ -61,6 +62,7 @@ pciSubDeviceField = 0x2E
 pciBaseClassField = 0xB
 pciSubClassField = 0xA
 pciInfClassField = 0x9
+pciIrqField = 0x3C
 
 pciBar0Field, pciBar1Field, pciBar2Field, pciBar3Field, pciBar4Field, pciBar5Field :: Word8
 pciBar0Field = 0x10

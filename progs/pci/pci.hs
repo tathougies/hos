@@ -83,7 +83,7 @@ main = do hosDebugLog "[pci] probing devices..."
           hosRequestIO
           devs <- probeMainBus archPciIO
           forM_ devs $ \dev ->
-              do hosDebugLog ("[pci] Found: Vendor Id = " ++ showHex (pciDevVid dev) (", Device id = " ++ showHex (pciDevDid dev) (", " ++ pciDevName dev)))
+              do hosDebugLog ("[pci] Found: Vendor Id = " ++ showHex (pciDevVid dev) (", Device id = " ++ showHex (pciDevDid dev) (", " ++ pciDevName dev ++ " on IRQ " ++ show (pciDevIrq dev))))
                  withStorageTransaction $
                    do driver <- storageQuery (TagIs (TagName "com.hos.dev.pci.supported-device") (TextV (strDevId dev)))
                       case driver of
@@ -93,7 +93,8 @@ main = do hosDebugLog "[pci] probing devices..."
                                                                        , ("com.hos.dev.pci.progIf", show (pciDevInfClass dev))
                                                                        , ("com.hos.dev.pci.busInd", show (pciSlotBusInd (pciDevSlot dev)))
                                                                        , ("com.hos.dev.pci.devInd", show (pciSlotDevInd (pciDevSlot dev)))
-                                                                       , ("com.hos.dev.pci.funcInd", show (pciSlotFuncInd (pciDevSlot dev))) ] ++
+                                                                       , ("com.hos.dev.pci.funcInd", show (pciSlotFuncInd (pciDevSlot dev)))
+                                                                       , ("com.hos.dev.pci.irq", show (pciDevIrq dev)) ] ++
                                                                        pciBarEnv dev)
                                         case taskId of
                                           Just _ -> return ()

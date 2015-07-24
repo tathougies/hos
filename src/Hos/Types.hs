@@ -99,6 +99,7 @@ data Arch regs vMemTbl archE =
     , archUnmapPage :: Word64 -> IO ()
     , archCopyPhysPage :: Word64 -> Word64 -> IO ()
     , archWalkVirtMemTbl :: vMemTbl -> Word64 -> Word64 -> (Word64 -> Word64 -> IO ()) -> IO ()
+    , archGetPhysPage :: Word64 -> IO Word64
 
     , archGetCurVirtMemTbl :: IO vMemTbl
 
@@ -152,6 +153,7 @@ data SysCall = DebugLog (Ptr Word8) Int -- special code 0x0
              | CloseAddressSpace AddressSpaceRef
              | SwitchToAddressSpace TaskId AddressSpaceRef
              | EnterAddressSpace AddressSpaceRef Word64
+             | PhysicalAddressFor Word64 (Ptr Word64)
 
                -- IPC (section 1)
              | DeliverMessage ChanId MessageEndpoint

@@ -60,6 +60,7 @@ x64 = Arch
     , archTestPage = x64TestPage
     , archCopyPhysPage = x64CopyPhysPage
     , archWalkVirtMemTbl = x64WalkVirtMemTbl
+    , archGetPhysPage = x64GetPhysPage
 
     , archGetCurVirtMemTbl = x64GetCurVirtMemTbl
 
@@ -368,8 +369,8 @@ x64SwitchToUserspace = do -- We're going to be returning to some location in use
                                reason <- x64SwitchToUserspaceAsm (castPtr x64TaskStateTmp) (castPtr x64KernelState)
                                case reason of
                                  256 -> x64GetUserSyscall >>= return . SysCallInterrupt
-                                 _ | reason < 256 -> x64MapFault reason >>= return . TrapInterrupt
-                                   | otherwise    -> return (DeviceInterrupt 0)
+                                 _ | reason < 128 -> x64MapFault reason >>= return . TrapInterrupt
+                                   | otherwise    -> return (DeviceInterrupt (reason .&. 0xF))
                              else -- Simulate the VM fault
                                  return (TrapInterrupt (VirtualMemoryFault FaultOnInstructionFetch rip))
 
@@ -409,6 +410,7 @@ x64GetUserSyscall =
          5 -> return (SwitchToAddressSpace (TaskId (fromIntegral sysCallArg1W)) (AddressSpaceRef (fromIntegral sysCallArg2W)))
          6 -> return EmptyAddressSpace
          7 -> return (EnterAddressSpace (AddressSpaceRef (fromIntegral sysCallArg1W)) sysCallArg2W)
+         8 -> return (PhysicalAddressFor sysCallArg1W (wordToPtr (sysCallArg2W)))
 
          0x100 -> return (DeliverMessage (ChanId (fromIntegral sysCallArg1W)) (MessageEndpoint (TaskId (fromIntegral sysCallArg2W)) (ChanId (fromIntegral sysCallArg3W))))
          0x101 -> return (RouteMessage  (ChanId (fromIntegral sysCallArg1W)) (MessageEndpoint (TaskId (fromIntegral sysCallArg2W)) (ChanId (fromIntegral sysCallArg3W))))

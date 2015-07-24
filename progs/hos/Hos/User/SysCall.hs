@@ -39,6 +39,9 @@ hosRequestIO = syscall 0x300 0 0 0 0 0
 hosDebugLog :: String -> IO ()
 hosDebugLog x = writeCString x $ \xp len -> syscall 0 (ptrToWord xp) (fromIntegral len) 0 0 0 >> return ()
 
+hosPhysAddrFor :: Word64 -> IO Word64
+hosPhysAddrFor x = bracket malloc free $ \wP -> syscall 8 x (ptrToWord wP) 0 0 0 >> peek wP
+
 hosFork :: IO Int
 hosFork = syscall 0x402 0 0 0 0 0 >>= return . fromIntegral
 

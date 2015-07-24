@@ -134,6 +134,8 @@ kernelize a st =
              runSysCall (closeAddressSpace addrSpaceRef) a st >>= kernelize a
          SysCallInterrupt (EnterAddressSpace addrSpaceRef entry) ->
              runSysCall (enterAddressSpace addrSpaceRef entry) a st >>= kernelize a
+         SysCallInterrupt (PhysicalAddressFor addr retPtr) ->
+             runSysCall (physicalAddressFor addr retPtr) a st >>= kernelize a
          SysCallInterrupt (DeliverMessage sourceChanId dst) ->
              runSysCall (deliverMessage sourceChanId dst) a st >>= kernelize a
          SysCallInterrupt (RouteMessage onChanId dst) ->
@@ -219,6 +221,16 @@ enterAddressSpace aRef entry =
        x <- liftIO $ do archSwitchTasks arch curTask curTask''
                         releaseAddressSpace arch (taskAddressSpace curTask) (taskVirtMemTbl curTask)
        x `seq` setCurrentTask curTask''
+
+physicalAddressFor :: Word64 -> Ptr Word64 -> SysCallM r v e ()
+physicalAddressFor vAddr retPtr =
+    ensuringPrivileges canGetPhysicalAddressP $ do
+      x <- ensurePtr (wordToPtr vAddr) ReadOnly
+      x1 <- ensurePtr retPtr ReadOnly
+      arch <- getArch
+      x `seq` x1 `seq`
+            (liftIO $ do basePhysPage <-archGetPhysPage arch vAddr
+                         poke retPtr (basePhysPage + (vAddr - alignToPage arch vAddr)))
 
 addMapping :: AddressSpaceRef -> AddressRange -> Mapping -> SysCallM r v e ()
 addMapping addrSpaceRef (AR start end) mapping =

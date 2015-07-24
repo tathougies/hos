@@ -43,11 +43,12 @@ serviceISR:
 	.set TRAP_REASON, 2
 	.set IRQ_REASON, 3
 
-	.set PUSHES_ERROR_CODE_FLAG, 0x200
-	.set IS_TRAP_FLAG, 0x100
+	.set PUSHES_ERROR_CODE_FLAG, 0x100
+	.set IS_TRAP_FLAG, 0x80
 
 	.set USERSPACE_CODE_SELECTOR, 0x23
 	.set USERSPACE_DATA_SELECTOR, 0x1b
+	cli # Clear the interrupt flag
 	pushq %rax
 	pushq %rbx
 	pushq %rcx
@@ -68,7 +69,7 @@ serviceISR:
 	mov %rax, (%rbx)
 
 	# Load the interrupt/trap number into rbx
-	# If bit 8 is set, then this is an IRQ. Otherwise, it's a trap
+	# If bit 7 is set, then this is an IRQ. Otherwise, it's a trap
 	movq 0x18(%rsp), %rbx
 	test $IS_TRAP_FLAG, %rbx
 	jz itsATrap
@@ -99,6 +100,7 @@ noErrorCode:
 	mov (%rsp, %rbx, 1), %rcx
 	mov %rcx, (RIP_I * 8)(%rax)
 	mov 0x10(%rsp, %rbx, 1), %rcx
+	orq $(1 << 9), %rcx # Interrupt flags
 	mov %rcx, (RFLAGS_I * 8)(%rax)
 
 	# Now, check if this was from userspace or kernel land, and set the
@@ -390,6 +392,7 @@ serviceSyscall:
 	# Since we came from a syscall, rcx contains the rip to return to, and
 	# r11 the old rflags
 	movq %rcx, (RIP_I * 8)(%r10)
+	orq $(1 << 9), %r11 # Set interrupt flag
 	movq %r11, (RFLAGS_I * 8)(%r10)
 
 	# Now save the SSE state
@@ -621,6 +624,71 @@ trap30:
 	jmp serviceISR
 trap31:
 	pushq $31
+	jmp serviceISR
+
+	.global irq0
+	.global irq1
+	.global irq2
+	.global irq3
+	.global irq4
+	.global irq5
+	.global irq6
+	.global irq7
+	.global irq8
+	.global irq9
+	.global irq10
+	.global irq11
+	.global irq12
+	.global irq13
+	.global irq14
+	.global irq15
+irq0:
+	pushq $0x80
+	jmp serviceISR
+irq1:
+	pushq $0x81
+	jmp serviceISR
+irq2:
+	pushq $0x82
+	jmp serviceISR
+irq3:
+	pushq $0x83
+	jmp serviceISR
+irq4:
+	pushq $0x84
+	jmp serviceISR
+irq5:
+	pushq $0x85
+	jmp serviceISR
+irq6:
+	pushq $0x86
+	jmp serviceISR
+irq7:
+	pushq $0x87
+	jmp serviceISR
+irq8:
+	pushq $0x88
+	jmp serviceISR
+irq9:
+	pushq $0x89
+	jmp serviceISR
+irq10:
+	pushq $0x8A
+	jmp serviceISR
+irq11:
+	pushq $0x8B
+	jmp serviceISR
+irq12:
+	pushq $0x8C
+	jmp serviceISR
+irq13:
+	pushq $0x8D
+	jmp serviceISR
+irq14:
+	pushq $0x8E
+	jmp serviceISR
+irq15:
+	pushq $0x8F
 	jmp serviceISR
 
 	.align 8

@@ -214,6 +214,8 @@ _longModeStart:
 	call jhc_alloc_init
 	# We're now ready to initialize the jhc haskell runtime. jhc creates a function for us called jhc_hs_init, which initializes its garbage collection structures. We should call that now.
 
+	call x64_setup_irqs
+
 	call jhc_hs_init
 	call _amain
 
@@ -375,4 +377,81 @@ wait:	inb %dx, %al
 	outb %al, %dx
 	pop %rax
 	pop %rdx
+	ret
+
+x64_setup_irqs:
+	.set MASTER_PIC_CMD, 0x20
+	.set MASTER_PIC_DATA, 0x21
+	.set SLAVE_PIC_CMD, 0xA0
+	.set SLAVE_PIC_DATA, 0xA1
+
+	.set PIC_EOI, 0x20
+
+	# We first reset the master PIC
+	# Some people tell you you need to IO cycle or something
+	# but it's bull crap
+	mov $0x11, %al
+	outb %al, $MASTER_PIC_CMD  # Re-initialize
+
+	mov $0x20, %al
+	outb %al, $MASTER_PIC_DATA # Base interrupt number for IRQ 0
+	mov $0x04, %al
+	outb %al, $MASTER_PIC_DATA # Interrupt 2 (0x4 = 1 << 2) is the daisy-chained slave
+	mov $0x05, %al
+	outb %al, $MASTER_PIC_DATA #  not SFNM, not buffered, normal EOI, 8086
+	mov $(~ (1 << 2)), %al
+	outb %al, $MASTER_PIC_DATA # Interrupt mask
+
+	mov $0x11, %al
+	outb %al, $SLAVE_PIC_CMD  # Re-initialize slave
+	mov $0x28, %al
+	outb %al, $SLAVE_PIC_DATA # Base interrupt number is IRQ 8
+	mov $0x02, %al
+	outb %al, $SLAVE_PIC_DATA # daisy-chained IRQ number
+	mov $0x01, %al
+	outb %al, $SLAVE_PIC_DATA # not SFNM, not buffered, normal EOI, 8086, Slave
+	mov $0xff, %al
+	outb %al, $SLAVE_PIC_DATA
+
+	ret
+
+x64_mask_irq:
+	movw $MASTER_PIC_DATA, %dx
+	movb %dil, %cl
+	movb $0x1, %dil
+	cmpb $0x8, %cl
+	jl x64_mask_irq_master
+	movw $SLAVE_PIC_DATA, %dx
+	subb $0x8, %cl
+x64_mask_irq_master:
+	inb %dx, %al
+	shl %cl, %dil
+	orb %dil, %al
+	outb %al, %dx
+	ret
+
+x64_unmask_irq:
+	movw $MASTER_PIC_DATA, %dx
+	movb %dil, %cl
+	movb $0x1, %dil
+	cmpb $0x8, %cl
+	jl x64_unmask_irq_master
+	movw $SLAVE_PIC_DATA, %dx
+	subb $0x8, %cl
+x64_unmask_irq_master:
+	inb %dx, %al
+	shl %cl, %dil
+	not %dil
+	andb %dil, %al
+	outb %al, %dx
+	ret
+
+x64_signal_pic_eoi:
+	.global x64_signal_pic_eoi
+	mov $PIC_EOI, %al
+	cmpb $0x8, %dil
+	jl x64_signal_pic_master_eoi
+	outb %al, $SLAVE_PIC_CMD
+x64_signal_pic_master_eoi:
+	outb %al, $MASTER_PIC_CMD
 	ret

@@ -46,6 +46,13 @@ instance Binary InitResponse where
             0xFF -> gReturn InitAlreadyRegistered
             _ -> gFail ("InitResponse: unknown type: " ++ show tag)
 
+initRegisterProvider :: String -> IO (Maybe InitResponse)
+initRegisterProvider svrName =
+    transmitMsg (ChanId 0) (ServerName "hos.init") (ChanId 0) (InitRegisterProvider svrName) >>= \res ->
+    case res of
+      Right x -> return (Just x)
+      Left err -> hosDebugLog ("initRegisterProvider: " ++ show err) >> return Nothing
+
 initFindProvider :: ServerName -> IO (Maybe TaskId)
 initFindProvider (ServerName serverName) =
     transmitMsg (ChanId 0) (ServerName "hos.init") (ChanId 0) (InitFindProvider serverName) >>= \res ->
