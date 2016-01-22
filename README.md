@@ -37,7 +37,7 @@ Steps to set it up with VirtualBox:
 7. Change 'Port Mode' to 'Raw file' and set 'Port/File Path' to a suitable output file location (you'll have to type it in).
 7. Hit run. Since your VM has no hard drive, VirtualBox should prompt you to choose an ISO
 8. Hit the browse button and choose the hos.iso from github
-9. Open your terminal and run 'tail -f <name-of-serial-port-output>'
+9. Open your terminal and run 'tail -f *name-of-serial-port-output*'
 10. Hit enter in the virtual box window, if all goes well you should see text streaming out of the file. If all goes well it should end with a message that the kernel has completed.
 
 Voilà, you've run a Haskell kernel!
